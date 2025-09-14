@@ -1,14 +1,19 @@
 import sys
 from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QMainWindow, QLabel, QTextEdit
 from PySide6.QtCore import Qt, QRect, QPropertyAnimation, QEasingCurve, QTimer, Signal, Property, QPoint
-from PySide6.QtGui import QPainter, QTextCursor, QTextDocument, QFont, QColor, QPen, QTextCharFormat, QPalette
+from PySide6.QtGui import QKeyEvent, QPainter, QTextCursor, QTextDocument, QFont, QColor, QPen, QTextCharFormat, QPalette
 import re
 import time
 import jieba
 
 
+sample_original_text = "Remarkable new treatments can free millions of kids and adults from the deadly threat of peanut allergy, tackling one of our fastest-growing medical problems"
+sample_translated_text = "令人瞩目的新疗法可以使数百万儿童和成人摆脱花生过敏的致命威胁，解决我们增长最快的医疗问题之一"
+
 class ContentTextEdit(QTextEdit):
     wordHovered = Signal(str, QRect)  # 悬浮单词信号，包含单词和位置
+    textSelected = Signal(str)  # 选中文本信号，包含选中的文本
+    textRemoved = Signal(str)  # 删除文本信号，包含删除的文本
     
     def __init__(self, text="", parent=None):
         super().__init__(text, parent)
@@ -25,6 +30,7 @@ class ContentTextEdit(QTextEdit):
 
         self.skip_words = set([" ", "\n", "\t", "", ".", ",", "!", "?", "，", "。", "！", "？", ";", "；", ":", "：", "\"", "'", "“", "”", "‘", "’", "（", "）", "(", ")", "[", "]", "{", "}", "<", ">", "-", "_", "+", "=", "*", "&", "^", "%", "$", "#", "@", "~", "`"])
         self.last_checked_word_timestamp = 0
+        self.selected_words = []
 
 
         # 动画高亮滑块属性
@@ -102,15 +108,33 @@ class ContentTextEdit(QTextEdit):
                 return word, word_rects
         return "", []
 
+    def set_selected_words(self, words):
+        self.selected_words = []
+        for word in words:
+            self.add_selected_word(word)
+
+    def add_selected_word(self, word):
+        if word and word not in self.selected_words:
+            # 查找所有匹配word的位置
+            poses = []
+            for (w, s, e) in self.text_split_result:
+                if w == word:
+                    poses.append((s, e))
+            if poses != []:
+                self.selected_words.append((word, poses))
+                self.viewport().update()
+
+    def remove_selected_word(self, word):
+        self.selected_words = [item for item in self.selected_words if item[0] != word]
+        self.viewport().update()
 
     def get_word_rects(self, start_pos, end_pos):
-        print(1)
         """获取单词在视口中的矩形位置（可能跨行，返回多个QRect）"""
         rects = []
         cursor = self.textCursor()
         cursor.setPosition(start_pos)
         
-        while cursor.position() <= end_pos:
+        while cursor.position() < end_pos:
             # 当前行起点
             start_cursor = QTextCursor(cursor)
             start_rect = self.cursorRect(start_cursor)
@@ -140,23 +164,34 @@ class ContentTextEdit(QTextEdit):
             painter = QPainter(self.viewport())
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
             
-            highlight_color = QColor(0, 150, 255, int(80 * self._highlight_opacity))
+            highlight_color = QColor(72, 120, 151, int(120 * self._highlight_opacity))
             pen_color = QColor(0, 200, 255, int(180 * self._highlight_opacity))
             painter.setPen(QPen(pen_color, 2))
             
             for rect in self._highlight_rects:
                 painter.fillRect(rect, highlight_color)
-                painter.drawLine(rect.left(), rect.bottom() + 2, rect.right(), rect.bottom() + 2)
+                # painter.drawLine(rect.left(), rect.bottom() + 2, rect.right(), rect.bottom() + 2)
             
             painter.end()
+        for (word, poses) in self.selected_words:
+            if poses:
+                painter = QPainter(self.viewport())
+                painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+                pen_color = QColor(255, 150, 0, int(150))
+                painter.setPen(QPen(pen_color, 1))
+
+                for pos in poses:
+                    for rect in self.get_word_rects(pos[0], pos[1]):
+                        painter.drawLine(rect.left(), rect.bottom(), rect.right(), rect.bottom())
+                painter.end()
 
     def mouseMoveEvent(self, event):
         """鼠标移动事件"""
         # 获取鼠标位置的单词
-        if time.time() - self.last_checked_word_timestamp < 0.1:
+        if time.time() - self.last_checked_word_timestamp < 0.05:
             super().mouseMoveEvent(event)
             return
-        word, word_rects = self.get_word_at_position(event.position().toPoint())
+        word, word_rects = self.get_word_at_position(event.position().toPoint()) 
         self.last_checked_word_timestamp = time.time()
         if word != self.hovered_word:
             self.hovered_word = word
@@ -183,7 +218,6 @@ class ContentTextEdit(QTextEdit):
         self.highlight_animation.setStartValue(0)
         self.highlight_animation.setEndValue(1)
         self.highlight_animation.start()
-        print(f"开始淡入动画")  
         
     
     def hide_highlight(self):
@@ -226,10 +260,17 @@ class ContentTextEdit(QTextEdit):
     
     def keyPressEvent(self, event):
         """禁用键盘输入（只读模式）"""
-        # 允许复制操作
-        if event.matches(QKeySequence.StandardKey.Copy):
-            super().keyPressEvent(event)
-        # 其他键盘事件忽略，保持只读状态
+        # 设置回车触发事件
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            event.ignore()  # 忽略回车事件，防止插入新行
+            if self.hovered_word:
+                if self.hovered_word in [w[0] for w in self.selected_words]:
+                    self.remove_selected_word(self.hovered_word)
+                    self.textRemoved.emit(self.hovered_word)
+                else:
+                    self.textSelected.emit(self.hovered_word)
+                    self.add_selected_word(self.hovered_word)
+            return
 
 
 # 示例窗口
@@ -254,31 +295,8 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(20, 20, 20, 20)
         
         # 示例文本
-        sample_text = """这是一个重构为QTextEdit的ContentTextEdit控件示例 test-text 。现在使用QTextEdit的内置API来精确获取文本位置，而不是模拟文本排布。
+        sample_text = sample_original_text
 
-This is a refactored ContentTextEdit example using QTextEdit. Now it uses built-in APIs to get precise text positions instead of simulating text layout.
-
-主要特性：
-• 透明背景的多行文本显示
-• 精确的单词位置检测
-• 平滑的高亮动画效果
-• 支持中英文混合文本
-• 只读模式，支持文本选择和复制
-“Can Peanut Allergies Be Cured?Remarkable new treatments can free millions of kids and adults from the deadly threat of peanut allergy, tackling one of our fastest-growing medical problemsBy Maryn McKenna edited by Josh Fischman Andrew B. MyersAnabelle Terry, a slender, self-possessed 13-year-old, has heard the peanut butter story her entire life. At two and a half she ate nuts for the first time. Her mother, Victoria, had made a little treat: popcorn drizzled with melted caramel, chocolate and peanut butter. Anabelle gobbled it down. “And afterward, I”
-
-摘录来自
-Scientific American [September 2025]
-Scientific American
-此材料受版权保护。
-Key Features:
-• Transparent background multi-line text display
-• Precise word position detection  
-• Smooth highlighting animation
-• Support for mixed Chinese and English text
-• Read-only mode with text selection and copy support
-
-将鼠标悬浮在任意单词上，查看精确的位置信息和高亮效果。Move your mouse over any word to see precise position information and highlighting effects."""
-        
         # 创建ContentTextEdit
         self.content_edit = ContentTextEdit(sample_text)
         self.content_edit.wordHovered.connect(self.on_word_hovered)

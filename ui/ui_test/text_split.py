@@ -1,4 +1,4 @@
 import jieba
 
-result = list(jieba.tokenize("永和服装饰品有限公司"))
-print
+result = list(jieba.tokenize("a book is on the table, and there is a pen"))
+print(result)
