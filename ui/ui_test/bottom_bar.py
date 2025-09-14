@@ -17,7 +17,7 @@ import sys
 import time
 import jieba
 
-sample_original_text = "Remarkable new treatments can free millions of kids and adults from the deadly threat of peanut allergy, tackling one of our fastest-growing medical problems"
+sample_original_text = "“There was more trouble ahead. A visit to an allergist confirmed that Anabelle was severely allergic to the peanut butter in the dessert, as well as to most other nuts. It began a life upheaval familiar to families of kids with allergies: learning to decode labels, to carry an EpiPen, and to interrogate friends and their parents about the ingredients in a birthday cake.Every once in a while, there would be a slip-up. It might be a snack that someone hadn’t scrutinized or a food package that didn’t list all potential allergens. And every time, Anabelle’s reactions got worse. Although she was just a schoolkid, she had to stay alert. “Eating lunch, all my friends would have PB&Js. And I’d be like, I’m going to sit a little bit farther away,” she recalls. “And going over to friends’ houses after school, we always had to make sure: ‘Hey, would you mind making a nut-free meal?’”"
 sample_translated_text = "令人瞩目的新疗法可以使数百万儿童和成人摆脱花生过敏的致命威胁，解决我们增长最快的医疗问题之一"
 
 
@@ -25,6 +25,7 @@ class ContentLabel(QTextEdit):
     wordHovered = Signal(str, QRect)  # 悬浮单词信号，包含单词和位置
     textSelected = Signal(str)  # 选中文本信号，包含选中的文本
     textRemoved = Signal(str)  # 删除文本信号，包含删除的文本
+
     
     def __init__(self, text="", parent=None):
         super().__init__(text, parent)
@@ -34,7 +35,12 @@ class ContentLabel(QTextEdit):
         
         # 设置透明背景样式
         self.setup_transparent_style()
-        
+
+        # 禁用滚动条，自适应高度
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+
         # 当前悬浮的单词信息
         self.hovered_word = ""
         self.hovered_word_rect = QRect()
@@ -42,6 +48,7 @@ class ContentLabel(QTextEdit):
         self.skip_words = set([" ", "\n", "\t", "", ".", ",", "!", "?", "，", "。", "！", "？", ";", "；", ":", "：", "\"", "'", "“", "”", "‘", "’", "（", "）", "(", ")", "[", "]", "{", "}", "<", ">", "-", "_", "+", "=", "*", "&", "^", "%", "$", "#", "@", "~", "`"])
         self.last_checked_word_timestamp = 0
         self.selected_words = []
+        self.selected_custom_words = []
 
 
         # 动画高亮滑块属性
@@ -73,6 +80,15 @@ class ContentLabel(QTextEdit):
         if text:
             self.setPlainText(text)
     
+    # 2. 添加自动调整高度的方法
+    def adjust_height_to_content(self):
+        """根据文本内容自动调整高度"""
+        doc = self.document()
+        doc_height = doc.size().height()
+        margins = self.contentsMargins()
+        total_height = int(doc_height + margins.top() + margins.bottom() + 20)  # 添加一些边距
+        self.setFixedHeight(total_height)
+
     def setup_transparent_style(self):
         """设置透明背景样式"""
         self.setStyleSheet("""
@@ -87,6 +103,10 @@ class ContentLabel(QTextEdit):
                 outline: none;
             }
         """)
+
+        # 设置鼠标样式为箭头，避免变成文本编辑光标
+        self.setCursor(Qt.CursorShape.ArrowCursor)
+        self.viewport().setCursor(Qt.CursorShape.ArrowCursor)
         
         # 设置文档边距
         doc = self.document()
@@ -125,6 +145,18 @@ class ContentLabel(QTextEdit):
             self.add_selected_word(word)
 
     def add_selected_word(self, word):
+        is_custom = True
+        if word in [w[0] for w in self.text_split_result]:
+            is_custom = False
+        
+        if is_custom:
+            pattern = rf"\b{re.escape(word)}\b"
+            matches = [(m.start(), m.end()) for m in re.finditer(pattern, self.toPlainText())]
+            if matches != []:
+                self.selected_custom_words.append((word, matches))
+                self.viewport().update()
+            
+            return
         if word and word not in self.selected_words:
             # 查找所有匹配word的位置
             poses = []
@@ -188,12 +220,25 @@ class ContentLabel(QTextEdit):
             if poses:
                 painter = QPainter(self.viewport())
                 painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+                highlight_color = QColor(255, 150, 0, int(45))
                 pen_color = QColor(255, 150, 0, int(150))
                 painter.setPen(QPen(pen_color, 1))
 
                 for pos in poses:
                     for rect in self.get_word_rects(pos[0], pos[1]):
+                        painter.fillRect(rect, highlight_color)
                         painter.drawLine(rect.left(), rect.bottom(), rect.right(), rect.bottom())
+                painter.end()
+        for (word, poses) in self.selected_custom_words:
+            if poses:
+                painter = QPainter(self.viewport())
+                painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+                pen_color = QColor(150, 255, 100, int(150))
+                painter.setPen(QPen(pen_color, 1))
+
+                for pos in poses:
+                    for rect in self.get_word_rects(pos[0], pos[1]):
+                        painter.drawLine(rect.left(), rect.bottom()+2, rect.right(), rect.bottom()+2)
                 painter.end()
 
     def mouseMoveEvent(self, event):
@@ -207,6 +252,7 @@ class ContentLabel(QTextEdit):
         if word != self.hovered_word:
             self.hovered_word = word
             if word and word_rects:
+                self.setFocus()
                 self.show_highlight(word_rects)
                 self.wordHovered.emit(word, word_rects[0])  # 兼容旧信号
                 self.hide_timer.stop()
@@ -268,13 +314,42 @@ class ContentLabel(QTextEdit):
         self.hovered_word = ""
         self.hovered_word_rect = QRect()
         self._highlight_opacity = 0
+            
+        # 自动调整高度
+        QTimer.singleShot(0, self.adjust_height_to_content)  # 使用定时器确保文档已更新
+
     
     def keyPressEvent(self, event):
         """禁用键盘输入（只读模式）"""
         # 设置回车触发事件
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             event.ignore()  # 忽略回车事件，防止插入新行
-            if self.hovered_word:
+            
+            # 检查是否有选中的文字
+            cursor = self.textCursor()
+            if cursor.hasSelection():
+                selected_text = cursor.selectedText()
+                start_pos = cursor.selectionStart()
+                end_pos = cursor.selectionEnd()
+                print(f"选中文字: '{selected_text}', 起始位置: {start_pos}, 结束位置: {end_pos}")
+                if selected_text in [w[0] for w in self.selected_words]:
+                    self.remove_selected_word(selected_text)
+                    self.textRemoved.emit(selected_text)
+                    print(f"删除单词: {selected_text}")
+                    return
+                elif selected_text in [w[0] for w in self.selected_custom_words]:
+                    self.selected_custom_words = [item for item in self.selected_custom_words if item[0] != selected_text]
+                    self.textRemoved.emit(selected_text)
+                    self.viewport().update()
+                    print(f"删除单词: {selected_text}")
+                    return
+                else:
+                    # 发射信号，传递选中的文字
+                    self.textSelected.emit(selected_text)
+                    self.add_selected_word(selected_text)
+                
+            elif self.hovered_word:
+                # 处理悬浮单词的选择/删除逻辑
                 if self.hovered_word in [w[0] for w in self.selected_words]:
                     self.remove_selected_word(self.hovered_word)
                     self.textRemoved.emit(self.hovered_word)
@@ -358,7 +433,7 @@ class ContentBlock(QWidget):
         
         # 设置布局边距和间距
         layout.setContentsMargins(30, 30, 30, 30)
-        layout.setSpacing(5)
+        layout.setSpacing(0)
         
         self.setLayout(layout)          
         
@@ -413,7 +488,7 @@ class BlurWindow(QWidget):
         content_layout.setSpacing(0)
 
         # 加入一些测试控件和分隔线
-        for i in range(1):
+        for i in range(10):
             block = ContentBlock(sample_original_text, sample_translated_text)
 
             content_layout.addWidget(block)

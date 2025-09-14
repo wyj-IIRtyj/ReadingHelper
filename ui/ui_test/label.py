@@ -1,13 +1,35 @@
 import sys
-from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QMainWindow, QLabel, QTextEdit
+from PySide6.QtWidgets import (
+    QApplication, QWidget, QVBoxLayout, QLabel, QScrollArea, QSizePolicy
+)
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QPainter, QColor, QBrush
+
+from PySide6.QtWidgets import QWidget
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QPainter, QColor, QBrush
+from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QLabel, QGraphicsBlurEffect, QPushButton, QMainWindow, QTextEdit
 from PySide6.QtCore import Qt, QRect, QPropertyAnimation, QEasingCurve, QTimer, Signal, Property, QPoint
-from PySide6.QtGui import QPainter, QTextCursor, QTextDocument, QFont, QColor, QPen, QTextCharFormat, QPalette
+from PySide6.QtGui import QPainter, QTextCursor, QTextDocument, QFont, QColor, QPen, QTextCharFormat, QPalette, QBrush
+
 import re
+import sys
+import time
 import jieba
+import spacy
+
+sample_original_text = """
+1.	Can Peanut Allergies Be Cured?
+d. A visit to an allergist confirmed that Anabelle was severely allergic to the peanut butter in the dessert, as well as to most other nuts. It began a life upheaval familiar to families of kids with allergies: learning to decode labels, to carry an EpiPen, and to interrogate friends and their parents about the ingredients in a birthday cake.
+"""
+sample_translated_text = "令人瞩目的新疗法可以使数百万儿童和成人摆脱花生过敏的致命威胁，解决我们增长最快的医疗问题之一"
 
 
-class ContentTextEdit(QTextEdit):
+class ContentLabel(QTextEdit):
     wordHovered = Signal(str, QRect)  # 悬浮单词信号，包含单词和位置
+    textSelected = Signal(str)  # 选中文本信号，包含选中的文本
+    textRemoved = Signal(str)  # 删除文本信号，包含删除的文本
+
     
     def __init__(self, text="", parent=None):
         super().__init__(text, parent)
@@ -17,13 +39,23 @@ class ContentTextEdit(QTextEdit):
         
         # 设置透明背景样式
         self.setup_transparent_style()
-        
+
+        # 禁用滚动条，自适应高度
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+
         # 当前悬浮的单词信息
         self.hovered_word = ""
         self.hovered_word_rect = QRect()
+        self.nlp = spacy.load("en_core_web_sm")
 
         self.skip_words = set([" ", "\n", "\t", "", ".", ",", "!", "?", "，", "。", "！", "？", ";", "；", ":", "：", "\"", "'", "“", "”", "‘", "’", "（", "）", "(", ")", "[", "]", "{", "}", "<", ">", "-", "_", "+", "=", "*", "&", "^", "%", "$", "#", "@", "~", "`"])
-        
+        self.last_checked_word_timestamp = 0
+        self.selected_words = []
+        self.selected_custom_words = []
+
+
         # 动画高亮滑块属性
         self._highlight_x = 0
         self._highlight_y = 0 
@@ -53,6 +85,15 @@ class ContentTextEdit(QTextEdit):
         if text:
             self.setPlainText(text)
     
+    # 2. 添加自动调整高度的方法
+    def adjust_height_to_content(self):
+        """根据文本内容自动调整高度"""
+        doc = self.document()
+        doc_height = doc.size().height()
+        margins = self.contentsMargins()
+        total_height = int(doc_height + margins.top() + margins.bottom() + 20)  # 添加一些边距
+        self.setFixedHeight(total_height)
+
     def setup_transparent_style(self):
         """设置透明背景样式"""
         self.setStyleSheet("""
@@ -67,6 +108,10 @@ class ContentTextEdit(QTextEdit):
                 outline: none;
             }
         """)
+
+        # 设置鼠标样式为箭头，避免变成文本编辑光标
+        self.setCursor(Qt.CursorShape.ArrowCursor)
+        self.viewport().setCursor(Qt.CursorShape.ArrowCursor)
         
         # 设置文档边距
         doc = self.document()
@@ -80,132 +125,153 @@ class ContentTextEdit(QTextEdit):
         
         # 设置视口背景透明
         self.viewport().setAutoFillBackground(False)
-    
+
     def get_word_at_position(self, pos):
-        """根据鼠标位置获取单词和位置"""
-        # 将窗口坐标转换为文档坐标
         cursor_at_pos = self.cursorForPosition(pos)
-        
         if cursor_at_pos.isNull():
-            return "", QRect()
+            return "", []
         
-        # 获取当前位置的字符
         cursor_pos = cursor_at_pos.position()
         text = self.toPlainText()
-        
         if cursor_pos >= len(text):
-            return "", QRect()
-        start_pos = cursor_pos
-        end_pos = cursor_pos + 1
-        word = ""
+            return "", []
+        
         for (word, start, end) in self.text_split_result:
             if start <= cursor_pos <= end:
-                # 找到对应的单词
-                start_pos = start
-                end_pos = end
-                break
-        if not word or word in self.skip_words:
-            return "", QRect()
+                if not word or word in self.skip_words:
+                    return "", []
+                word_rects = self.get_word_rects(start, end)
+                return text[start:end], word_rects
+        return "", []
+
+    def set_selected_words(self, words):
+        self.selected_words = []
+        for word in words:
+            self.add_selected_word(word)
+
+    def add_selected_word(self, word):
+        is_custom = True
+        original_word = word
+        lemma_word = self.text_to_lemma(word)
+
+        if lemma_word in [w[0] for w in self.text_split_result]:
+            is_custom = False
         
-        # 获取单词的精确位置
-        word_rect = self.get_word_rect(start_pos, end_pos)
-        
-        return word, word_rect
-    
-    def get_word_rect(self, start_pos, end_pos):
-        """获取单词在视口中的精确矩形位置"""
-        # 创建光标选择单词
+        if is_custom:
+            pattern = rf"\b{re.escape(original_word)}\b"
+            matches = [(m.start(), m.end()) for m in re.finditer(pattern, self.toPlainText())]
+            if matches != []:
+                self.selected_custom_words.append((original_word, matches))
+                self.viewport().update()
+            
+            return
+        if original_word and original_word not in self.selected_words:
+            # 查找所有匹配word的位置
+            poses = []
+            for (w, s, e) in self.text_split_result:
+                if w == lemma_word:
+                    poses.append((s, e))
+            if poses != []:
+                self.selected_words.append((original_word, poses))
+                self.viewport().update()
+
+    def remove_selected_word(self, word):
+        self.selected_words = [item for item in self.selected_words if item[0] != word]
+        self.viewport().update()
+
+    # 文本处理
+    def text_to_lemma(self, text):
+        doc = self.nlp(text)
+        return " ".join([token.lemma_ for token in doc])
+
+    def get_word_rects(self, start_pos, end_pos):
+        """获取单词在视口中的矩形位置（可能跨行，返回多个QRect）"""
+        rects = []
         cursor = self.textCursor()
         cursor.setPosition(start_pos)
-        cursor.setPosition(end_pos, QTextCursor.MoveMode.KeepAnchor)
         
-        # 获取选区的几何信息
-        selection_rect = self.cursorRect(cursor)
-        
-        # 如果单词跨行，需要特殊处理
-        if cursor.hasSelection():
-            # 获取开始位置
-            start_cursor = self.textCursor()
-            start_cursor.setPosition(start_pos)
+        while cursor.position() < end_pos:
+            # 当前行起点
+            start_cursor = QTextCursor(cursor)
             start_rect = self.cursorRect(start_cursor)
-            
-            # 获取结束位置
-            end_cursor = self.textCursor()
-            end_cursor.setPosition(end_pos)
+
+            start_top_pos = start_rect.top()
+            while cursor.position() < end_pos and self.cursorRect(cursor).top() == start_top_pos:
+                cursor.setPosition(cursor.position()+1)
+
+            end_cursor = QTextCursor(cursor)
             end_rect = self.cursorRect(end_cursor)
             
-            # 计算单词的边界矩形
-            left = min(start_rect.left(), end_rect.left())
-            top = min(start_rect.top(), end_rect.top())
-            right = max(start_rect.right(), end_rect.right())
-            bottom = max(start_rect.bottom(), end_rect.bottom())
+            word_text = self.toPlainText()[start_cursor.position():end_cursor.position()]
+            text_width = self.fontMetrics().horizontalAdvance(word_text)
+            rect = QRect(start_rect.left(), start_rect.top(), text_width, start_rect.height())
+            rects.append(rect)
+
+            if self.cursorRect(cursor).top() != start_top_pos:
+                cursor.setPosition(cursor.position()-1)
             
-            # 如果是同一行，使用实际的文本宽度
-            if start_rect.top() == end_rect.top():
-                # 使用字体度量计算精确宽度
-                font_metrics = self.fontMetrics()
-                word_text = self.toPlainText()[start_pos:end_pos]
-                text_width = font_metrics.horizontalAdvance(word_text)
-                
-                word_rect = QRect(start_rect.left(), start_rect.top(), text_width, start_rect.height())
-            else:
-                # 跨行的情况，使用边界矩形
-                word_rect = QRect(left, top, right - left, bottom - top)
-        else:
-            word_rect = selection_rect
-        
-        return word_rect
-    
+            # 移动到下一个位置
+            cursor.setPosition(cursor.position()+1)
+        return rects
+
     def paintEvent(self, event):
-        """重写绘制事件"""
-        # 先调用父类绘制文本
         super().paintEvent(event)
-        
-        # 绘制高亮滑块
-        if self._highlight_opacity > 0:
+        if self._highlight_opacity > 0 and hasattr(self, "_highlight_rects"):
             painter = QPainter(self.viewport())
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
             
-            # 设置高亮背景色
-            highlight_color = QColor(0, 150, 255, int(80 * self._highlight_opacity))
-            painter.fillRect(
-                int(self._highlight_x), 
-                int(self._highlight_y), 
-                int(self._highlight_width), 
-                int(self._highlight_height), 
-                highlight_color
-            )
-            
-            # 绘制底部高亮线
+            highlight_color = QColor(72, 120, 151, int(120 * self._highlight_opacity))
             pen_color = QColor(0, 200, 255, int(180 * self._highlight_opacity))
             painter.setPen(QPen(pen_color, 2))
-            painter.drawLine(
-                int(self._highlight_x), 
-                int(self._highlight_y + self._highlight_height + 2),
-                int(self._highlight_x + self._highlight_width), 
-                int(self._highlight_y + self._highlight_height + 2)
-            )
+            
+            for rect in self._highlight_rects:
+                painter.fillRect(rect, highlight_color)
+                # painter.drawLine(rect.left(), rect.bottom() + 2, rect.right(), rect.bottom() + 2)
             
             painter.end()
-    
+        for (word, poses) in self.selected_words:
+            if poses:
+                painter = QPainter(self.viewport())
+                painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+                highlight_color = QColor(255, 150, 0, int(45))
+                pen_color = QColor(255, 150, 0, int(150))
+                painter.setPen(QPen(pen_color, 1))
+
+                for pos in poses:
+                    for rect in self.get_word_rects(pos[0], pos[1]):
+                        painter.fillRect(rect, highlight_color)
+                        painter.drawLine(rect.left(), rect.bottom(), rect.right(), rect.bottom())
+                painter.end()
+        for (word, poses) in self.selected_custom_words:
+            if poses:
+                painter = QPainter(self.viewport())
+                painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+                pen_color = QColor(150, 255, 100, int(150))
+                painter.setPen(QPen(pen_color, 1))
+
+                for pos in poses:
+                    for rect in self.get_word_rects(pos[0], pos[1]):
+                        painter.drawLine(rect.left(), rect.bottom()+2, rect.right(), rect.bottom()+2)
+                painter.end()
+
     def mouseMoveEvent(self, event):
         """鼠标移动事件"""
         # 获取鼠标位置的单词
-        word, word_rect = self.get_word_at_position(event.position().toPoint())
-        
-        # 检查是否是新的单词
-        if word != self.hovered_word or word_rect != self.hovered_word_rect:
+        if time.time() - self.last_checked_word_timestamp < 0.05:
+            super().mouseMoveEvent(event)
+            return
+        word, word_rects = self.get_word_at_position(event.position().toPoint()) 
+        self.last_checked_word_timestamp = time.time()
+        if word != self.hovered_word:
             self.hovered_word = word
-            self.hovered_word_rect = word_rect
-            
-            if word and not word_rect.isEmpty():
-                # 显示高亮
-                self.show_highlight(word_rect)
-                self.wordHovered.emit(word, word_rect)
+            if word and word_rects:
+                self.setFocus()
+                self.show_highlight(word_rects)
+                self.wordHovered.emit(word, word_rects[0])  # 兼容旧信号
                 self.hide_timer.stop()
             else:
-                # 隐藏高亮
                 self.hide_timer.start(300)
+
         
         super().mouseMoveEvent(event)
     
@@ -216,21 +282,12 @@ class ContentTextEdit(QTextEdit):
         self.hide_timer.start(300)
         super().leaveEvent(event)
     
-    def show_highlight(self, rect):
-        """显示高亮"""
-        print(f"显示高亮: {self.hovered_word} at {rect}")
-        # 停止当前动画
+    def show_highlight(self, rects):
+        self._highlight_rects = rects
         self.highlight_animation.stop()
-        self.move_animation.stop()
-        
-        # 设置目标位置
-        target_rect = [rect.x(), rect.y(), rect.width(), rect.height()]
-        
-        self.highlight_rect = target_rect
         self.highlight_animation.setStartValue(0)
         self.highlight_animation.setEndValue(1)
         self.highlight_animation.start()
-        print(f"开始淡入动画")  
         
     
     def hide_highlight(self):
@@ -266,147 +323,309 @@ class ContentTextEdit(QTextEdit):
         super().setPlainText(text)
         # 重置高亮状态
 
-        self.text_split_result = list(jieba.tokenize(text))
+        self.text_split_result = list((self.text_to_lemma(w), s, e) for (w, s, e) in jieba.tokenize(text))
         self.hovered_word = ""
         self.hovered_word_rect = QRect()
         self._highlight_opacity = 0
+            
+        # 自动调整高度
+        QTimer.singleShot(0, self.adjust_height_to_content)  # 使用定时器确保文档已更新
+
     
     def keyPressEvent(self, event):
         """禁用键盘输入（只读模式）"""
-        # 允许复制操作
-        if event.matches(QKeySequence.StandardKey.Copy):
+        # 设置回车触发事件
+        if event.key() == Qt.Key.Key_Escape:
             super().keyPressEvent(event)
-        # 其他键盘事件忽略，保持只读状态
+            return
+
+        if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            super().keyPressEvent(event)
+            return
+
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            event.ignore()  # 忽略回车事件，防止插入新行
+            
+            # 检查是否有选中的文字
+            cursor = self.textCursor()
+            if cursor.hasSelection():
+                selected_text = cursor.selectedText()
+                start_pos = cursor.selectionStart()
+                end_pos = cursor.selectionEnd()
+                print(f"选中文字: '{selected_text}', 起始位置: {start_pos}, 结束位置: {end_pos}")
+                if selected_text in [w[0] for w in self.selected_words]:
+                    self.remove_selected_word(selected_text)
+                    self.textRemoved.emit(selected_text)
+                    print(f"删除单词: {selected_text}")
+                    return
+                elif selected_text in [w[0] for w in self.selected_custom_words]:
+                    self.selected_custom_words = [item for item in self.selected_custom_words if item[0] != selected_text]
+                    self.textRemoved.emit(selected_text)
+                    self.viewport().update()
+                    print(f"删除单词: {selected_text}")
+                    return
+                else:
+                    # 发射信号，传递选中的文字
+                    self.textSelected.emit(selected_text)
+                    self.add_selected_word(selected_text)
+                
+            elif self.hovered_word:
+                # 处理悬浮单词的选择/删除逻辑
+                if self.hovered_word in [w[0] for w in self.selected_words]:
+                    self.remove_selected_word(self.hovered_word)
+                    self.textRemoved.emit(self.hovered_word)
+                    print(f"删除单词: {self.hovered_word}")
+                else:
+                    self.textSelected.emit(self.hovered_word)
+                    self.add_selected_word(self.hovered_word)
+                    print(f"选中单词: {self.hovered_word}")
+
+            return
 
 
-# 示例窗口
-class MainWindow(QMainWindow):
+class SplitLine(QWidget):
+    def __init__(self, thickness=1, color=QColor(255, 255, 255, 100), parent=None):
+        """
+        分隔线控件
+        
+        Args:
+            thickness (int): 线条粗细，默认2px
+            color (QColor): 线条颜色，默认半透明白色
+            parent: 父控件
+        """
+        super().__init__(parent)
+        self.thickness = thickness
+        self.color = color
+        
+        # 设置固定高度为线条粗细
+        self.setFixedHeight(thickness)
+        
+        # 设置水平拉伸策略，自动占据父级容器横向宽度
+        self.setSizePolicy(
+            QSizePolicy.Policy.Expanding,  # 水平方向扩展
+            QSizePolicy.Policy.Fixed       # 垂直方向固定
+        )
+        
+        # 设置背景透明
+        self.setContentsMargins(0, 0, 0, 0)
+        self.setStyleSheet("background: transparent;")
+    
+    def set_thickness(self, thickness):
+        """设置线条粗细"""
+        self.thickness = thickness
+        self.setFixedHeight(thickness)
+        self.update()  # 刷新重绘
+    
+    def set_color(self, color):
+        """设置线条颜色"""
+        self.color = color
+        self.update()  # 刷新重绘
+    
+    def paintEvent(self, event):
+        """绘制分隔线"""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        # 设置画笔颜色和宽度
+        painter.setBrush(QBrush(self.color))
+        painter.setPen(Qt.NoPen)
+        
+        # 绘制矩形作为分隔线
+        painter.drawRect(0, 0, self.width(), self.thickness)
+
+class ContentBlock(QWidget):     
+    def __init__(self, original_text, translated_text, parent=None):         
+        super().__init__(parent)       
+
+        self.setObjectName("ContentBlock")  
+        
+        layout = QVBoxLayout(self)
+        
+        # 创建标签并设置自动换行和对齐方式
+        original_label = ContentLabel(original_text, self)
+        
+        translated_label = ContentLabel(translated_text, self)
+        
+        layout.addWidget(original_label)         
+        layout.addWidget(SplitLine(thickness=1, color=QColor(255, 255, 255, 100)))         
+        layout.addWidget(translated_label)          
+        
+        # 设置布局边距和间距
+        layout.setContentsMargins(30, 30, 30, 30)
+        layout.setSpacing(0)
+        
+        self.setLayout(layout)          
+        
+        # 设置尺寸策略，让组件能够扩展
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        
+        # 删除动画相关属性
+        self._background_color = QColor(200, 255, 200, 0)  # 初始背景颜色
+        self._delete_animation_running = False  # 动画运行状态
+        
+        # 创建颜色动画
+        self.color_animation = QPropertyAnimation(self, b"background_color")
+        self.color_animation.setDuration(500)  # 0.5秒
+        self.color_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self.color_animation.finished.connect(self._on_animation_finished)
+
+        # 创建高度收缩动画
+        self.height_animation = QPropertyAnimation(self, b"maximumHeight")
+        self.height_animation.setDuration(300)  # 0.3秒
+        self.height_animation.setEasingCurve(QEasingCurve.Type.InOutQuart)
+        self.height_animation.finished.connect(self._on_height_animation_finished)
+        
+        self.setStyleSheet("""      
+            QLabel {
+                padding: 0;
+                border: none;
+                color: rgba(255, 255, 255, 200);
+            }
+        """)
+    
+    def get_background_color(self):
+        return self._background_color
+    
+    def set_background_color(self, color):
+        self._background_color = color
+        self.update()  # 触发重绘
+    
+    # 定义属性，用于动画
+    background_color = Property(QColor, get_background_color, set_background_color)
+    
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), self._background_color)
+        super().paintEvent(event)
+    
+    def _on_animation_finished(self):
+        """动画完成回调"""
+        self._delete_animation_running = False
+        # 将背景色设置为透明深蓝色
+        self._background_color = QColor(255, 100, 100, 0)  # 透明深蓝色
+        self.update()
+    
+    def _on_height_animation_finished(self):
+        """高度动画完成后真正关闭组件"""
+        self.close()
+        
+    def _start_close_animation(self):
+        """开始关闭动画"""
+        # 保存当前高度
+        self._original_height = self.height()
+        
+        # 设置高度动画
+        self.height_animation.setStartValue(self._original_height)
+        self.height_animation.setEndValue(0)
+        
+        # 设置固定高度约束，防止内容撑开
+        self.setMaximumHeight(self._original_height)
+        
+        # 开始高度收缩动画
+        self.height_animation.start()
+    
+    def _start_delete_animation(self):
+        """开始删除动画"""
+        if self._delete_animation_running:
+            # 如果动画正在运行，开始关闭动画
+            self._start_close_animation()
+            return
+        
+        # 标记动画开始
+        self._delete_animation_running = True
+        
+        # 设置动画起始和结束颜色
+        start_color = QColor(255, 100, 100, 200)  # 较高不透明度的红色
+        end_color = QColor(255, 100, 100, 0)       # 透明深蓝色
+        
+        self.color_animation.setStartValue(start_color)
+        self.color_animation.setEndValue(end_color)
+        
+        # 立即设置起始颜色并开始动画
+        self._background_color = start_color
+        self.update()
+        self.color_animation.start()
+    
+    def keyPressEvent(self, event):
+        """禁用键盘输入（只读模式）"""
+        # 设置回车触发事件
+        if event.key() == Qt.Key.Key_Escape:
+            super().keyPressEvent(event)
+            return
+
+        if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            self._start_delete_animation()
+            return
+
+
+class BlurWindow(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("ContentTextEdit 示例 - 透明多行文本框")
-        self.setGeometry(100, 100, 800, 600)
-        
-        # 设置深色背景
-        self.setStyleSheet("""
-            QMainWindow {
-                background-color: #2b2b2b;
-            }
-        """)
-        
-        # 创建中央窗口
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
-        
-        layout = QVBoxLayout(central_widget)
-        layout.setContentsMargins(20, 20, 20, 20)
-        
-        # 示例文本
-        sample_text = """这是一个重构为QTextEdit的ContentTextEdit控件示例 test-text 。现在使用QTextEdit的内置API来精确获取文本位置，而不是模拟文本排布。
+        self.setAttribute(Qt.WA_TranslucentBackground)  # 透明背景
+        self.setWindowFlag(Qt.FramelessWindowHint)      # 去掉窗口边框
 
-This is a refactored ContentTextEdit example using QTextEdit. Now it uses built-in APIs to get precise text positions instead of simulating text layout.
+        # 样式参数
+        self.style_args = {
+            "background-color": QColor(40, 40, 40, 230),
+            "font-size": "16px",
+            "padding": "10px",
+            "border-radius": 10
+        }
 
-主要特性：
-• 透明背景的多行文本显示
-• 精确的单词位置检测
-• 平滑的高亮动画效果
-• 支持中英文混合文本
-• 只读模式，支持文本选择和复制
-“Can Peanut Allergies Be Cured?Remarkable new treatments can free millions of kids and adults from the deadly threat of peanut allergy, tackling one of our fastest-growing medical problemsBy Maryn McKenna edited by Josh Fischman Andrew B. MyersAnabelle Terry, a slender, self-possessed 13-year-old, has heard the peanut butter story her entire life. At two and a half she ate nuts for the first time. Her mother, Victoria, had made a little treat: popcorn drizzled with melted caramel, chocolate and peanut butter. Anabelle gobbled it down. “And afterward, I”
+        # ========== ScrollArea ==========
+        scroll_area = QScrollArea(self)
+        scroll_area.setWidgetResizable(True)  # 随内容调整大小
+        scroll_area.setFrameShape(QScrollArea.NoFrame)  # 去掉边框
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)  # 只要垂直滚动条
+        
+        # 关键修改：设置 QScrollArea 背景透明
+        scroll_area.setStyleSheet("QScrollArea { background: transparent; }")
 
-摘录来自
-Scientific American [September 2025]
-Scientific American
-此材料受版权保护。
-Key Features:
-• Transparent background multi-line text display
-• Precise word position detection  
-• Smooth highlighting animation
-• Support for mixed Chinese and English text
-• Read-only mode with text selection and copy support
+        # 内容容器
+        content_widget = QWidget()
+        content_widget.setAutoFillBackground(False)
+        # 关键修改：设置内容容器背景透明
+        content_widget.setStyleSheet("QWidget { background: transparent; }")
+        
+        content_layout = QVBoxLayout(content_widget)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
 
-将鼠标悬浮在任意单词上，查看精确的位置信息和高亮效果。Move your mouse over any word to see precise position information and highlighting effects."""
-        
-        # 创建ContentTextEdit
-        self.content_edit = ContentTextEdit(sample_text)
-        self.content_edit.wordHovered.connect(self.on_word_hovered)
-        layout.addWidget(self.content_edit, 1)  # 给予更多空间
-        
-        # 状态标签
-        self.status_label = QLabel("将鼠标悬浮在上方文本的单词上...")
-        self.status_label.setStyleSheet("""
-            QLabel {
-                color: rgba(255, 255, 255, 150);
-                padding: 15px;
-                background: rgba(255, 255, 255, 10);
-                border-radius: 8px;
-                font-size: 12px;
-            }
-        """)
-        self.status_label.setWordWrap(True)
-        layout.addWidget(self.status_label)
-        
-        # 控制按钮区域
-        controls_widget = QWidget()
-        controls_layout = QVBoxLayout(controls_widget)
-        
-        # 添加一个按钮来测试setText功能
-        from PySide6.QtWidgets import QPushButton
-        test_button = QPushButton("更换示例文本")
-        test_button.setStyleSheet("""
-            QPushButton {
-                background: rgba(0, 150, 255, 100);
-                color: white;
-                border: none;
-                padding: 10px 20px;
-                border-radius: 5px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background: rgba(0, 150, 255, 150);
-            }
-            QPushButton:pressed {
-                background: rgba(0, 120, 200, 200);
-            }
-        """)
-        test_button.clicked.connect(self.change_text)
-        controls_layout.addWidget(test_button)
-        
-        layout.addWidget(controls_widget)
-    
-    def on_word_hovered(self, word, rect):
-        """处理单词悬浮事件"""
-        self.status_label.setText(
-            f"悬浮单词: '{word}'\n"
-            f"位置: ({rect.x()}, {rect.y()})\n"
-            f"尺寸: {rect.width()} × {rect.height()} 像素\n"
-            f"使用QTextEdit内置API获取精确位置"
-        )
-    
-    def change_text(self):
-        """更换文本内容"""
-        new_text = """这是新的文本内容！This is new text content!
+        # 加入一些测试控件和分隔线
+        for i in range(10):
+            block = ContentBlock(sample_original_text, sample_translated_text)
 
-QTextEdit提供了强大的文本处理能力：
-✓ 精确的光标定位 (cursorForPosition)
-✓ 文本块和字符格式支持
-✓ 内置的文本度量和几何计算
-✓ 自动换行和滚动支持
+            content_layout.addWidget(block)
+            
+            content_layout.addWidget(SplitLine())
 
-QTextEdit provides powerful text processing capabilities:
-✓ Precise cursor positioning (cursorForPosition)  
-✓ Text block and character format support
-✓ Built-in text metrics and geometry calculation
-✓ Automatic word wrap and scroll support
+        scroll_area.setWidget(content_widget)
 
-试试悬浮在这些新单词上！Try hovering over these new words!"""
-        
-        self.content_edit.setPlainText(new_text)
+        # ========== 主布局 ==========
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 10, 0, 10)  # 让scroll_area填充整个窗口
+        layout.addWidget(scroll_area)
+        self.setLayout(layout)
+
+    def paintEvent(self, event):
+        """绘制模糊窗口背景"""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        brush = QBrush(self.style_args["background-color"])
+        painter.setBrush(brush)
+        painter.setPen(Qt.NoPen)
+        painter.drawRoundedRect(self.rect(), self.style_args["border-radius"], self.style_args["border-radius"])
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Escape:
+            self.close()
+        super().keyPressEvent(event)  # 不要吃掉事件
+
 
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    
-    window = MainWindow()
-    window.show()
-    
+    w = BlurWindow()
+    w.resize(400, 700)
+    w.show()
     sys.exit(app.exec())
