@@ -19,9 +19,8 @@ import jieba
 import spacy
 
 sample_original_text = """
-1.	Can Peanut Allergies Be Cured?
-d. A visit to an allergist confirmed that Anabelle was severely allergic to the peanut butter in the dessert, as well as to most other nuts. It began a life upheaval familiar to families of kids with allergies: learning to decode labels, to carry an EpiPen, and to interrogate friends and their parents about the ingredients in a birthday cake.
-"""
+1.Can Peanut Allergies Be Cured?
+A visit to an allergist confirmed that Anabelle was severely allergic to the peanut butter in the dessert, as well as to most other nuts. It began a life upheaval familiar to families of kids with allergies: learning to decode labels, to carry an EpiPen, and to interrogate friends and their parents about the ingredients in a birthday cake."""
 sample_translated_text = "令人瞩目的新疗法可以使数百万儿童和成人摆脱花生过敏的致命威胁，解决我们增长最快的医疗问题之一"
 
 
@@ -31,13 +30,14 @@ class ContentLabel(QTextEdit):
     textRemoved = Signal(str)  # 删除文本信号，包含删除的文本
 
     
-    def __init__(self, text="", parent=None):
+    def __init__(self, text="", parent=None, style_type=1):
         super().__init__(text, parent)
         
         # 设置为只读模式
         self.setReadOnly(True)
         
         # 设置透明背景样式
+        self.style_type = style_type
         self.setup_transparent_style()
 
         # 禁用滚动条，自适应高度
@@ -91,23 +91,40 @@ class ContentLabel(QTextEdit):
         doc = self.document()
         doc_height = doc.size().height()
         margins = self.contentsMargins()
-        total_height = int(doc_height + margins.top() + margins.bottom() + 20)  # 添加一些边距
+        total_height = int(doc_height + margins.top() + margins.bottom())  # 添加一些边距
         self.setFixedHeight(total_height)
 
     def setup_transparent_style(self):
         """设置透明背景样式"""
-        self.setStyleSheet("""
-            QTextEdit {
-                background: transparent;
-                border: none;
-                color: rgba(255, 255, 255, 200);
-                selection-background-color: rgba(0, 150, 255, 100);
-                padding: 10px;
-            }
-            QTextEdit:focus {
-                outline: none;
-            }
-        """)
+        if self.style_type == 1:
+            self.setStyleSheet("""
+                QTextEdit {
+                    background: rgba(200, 200, 200, 50);
+                    border: none;
+                    border-top-left-radius: 10px;
+                    border-top-right-radius: 10px;
+                    color: rgba(255, 255, 255, 200);
+                    selection-background-color: rgba(0, 150, 255, 100);
+                    padding: 10px;
+                }
+                QTextEdit:focus {
+                    outline: none;}
+            """)
+        elif self.style_type == 2:
+            self.setStyleSheet("""
+                QTextEdit {
+                    background: rgba(200, 200, 200, 50);
+                    border: none;
+                    border-bottom-left-radius: 10px;
+                    border-bottom-right-radius: 10px;
+                    color: rgba(255, 255, 255, 200);
+                    selection-background-color: rgba(0, 150, 255, 100);
+                    padding: 10px;
+                }
+                QTextEdit:focus {
+                    outline: none;
+                }
+            """)
 
         # 设置鼠标样式为箭头，避免变成文本编辑光标
         self.setCursor(Qt.CursorShape.ArrowCursor)
@@ -115,7 +132,7 @@ class ContentLabel(QTextEdit):
         
         # 设置文档边距
         doc = self.document()
-        doc.setDocumentMargin(10)
+        doc.setDocumentMargin(0)
         
         # 设置调色板确保透明背景
         palette = self.palette()
@@ -253,6 +270,10 @@ class ContentLabel(QTextEdit):
                     for rect in self.get_word_rects(pos[0], pos[1]):
                         painter.drawLine(rect.left(), rect.bottom()+2, rect.right(), rect.bottom()+2)
                 painter.end()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)   # 保持默认行为
+        self.adjust_height_to_content()
 
     def mouseMoveEvent(self, event):
         """鼠标移动事件"""
@@ -438,13 +459,14 @@ class ContentBlock(QWidget):
         super().__init__(parent)       
 
         self.setObjectName("ContentBlock")  
+        self.split_line = None
         
         layout = QVBoxLayout(self)
         
         # 创建标签并设置自动换行和对齐方式
-        original_label = ContentLabel(original_text, self)
+        original_label = ContentLabel(original_text, self, style_type=1)
         
-        translated_label = ContentLabel(translated_text, self)
+        translated_label = ContentLabel(translated_text, self, style_type=2)
         
         layout.addWidget(original_label)         
         layout.addWidget(SplitLine(thickness=1, color=QColor(255, 255, 255, 100)))         
@@ -489,7 +511,11 @@ class ContentBlock(QWidget):
     def set_background_color(self, color):
         self._background_color = color
         self.update()  # 触发重绘
-    
+
+    def set_split_line(self, line):
+        """设置分隔线控件"""
+        self.split_line = line
+
     # 定义属性，用于动画
     background_color = Property(QColor, get_background_color, set_background_color)
     
@@ -507,7 +533,10 @@ class ContentBlock(QWidget):
     
     def _on_height_animation_finished(self):
         """高度动画完成后真正关闭组件"""
+        if self.split_line: 
+            self.split_line.close()
         self.close()
+        
         
     def _start_close_animation(self):
         """开始关闭动画"""
@@ -592,12 +621,16 @@ class BlurWindow(QWidget):
         content_layout.setSpacing(0)
 
         # 加入一些测试控件和分隔线
-        for i in range(10):
+        for i in range(2):
             block = ContentBlock(sample_original_text, sample_translated_text)
+            split_line = SplitLine()
+            block.set_split_line(split_line)
 
             content_layout.addWidget(block)
-            
-            content_layout.addWidget(SplitLine())
+
+            content_layout.addWidget(split_line)
+
+        content_layout.addStretch(2)  # 底部弹性空间
 
         scroll_area.setWidget(content_widget)
 

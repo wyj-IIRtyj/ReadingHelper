@@ -17,6 +17,7 @@ import sys
 import time
 import jieba
 import spacy
+import threading
 
 sample_original_text = """
 1.Can Peanut Allergies Be Cured?
@@ -29,6 +30,7 @@ class ContentLabel(QTextEdit):
     textSelected = Signal(str)  # 选中文本信号，包含选中的文本
     textRemoved = Signal(str)  # 删除文本信号，包含删除的文本
 
+    dataInitialized = Signal()
     
     def __init__(self, text="", parent=None, style_type=1):
         super().__init__(text, parent)
@@ -67,11 +69,24 @@ class ContentLabel(QTextEdit):
         self.highlight_animation = QPropertyAnimation(self, b"highlight_opacity")
         self.highlight_animation.setDuration(200)
         self.highlight_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+        self._background_animation_opacity = 0.0
+        self.flash_color_selections = {
+            "green": (150, 220, 160, 100), 
+            "red": (220, 150, 160, 100)
+        }
+        self.flash_color_select = "green"
+        self.background_animation = QPropertyAnimation(self, b"background_animation_opacity")
+        self.background_animation.setDuration(500)  # 1秒
+        self.background_animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
         
+
         self.move_animation = QPropertyAnimation(self, b"highlight_rect")
         self.move_animation.setDuration(300)
         self.move_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
         
+        self.dataInitialized.connect(self.start_data_initialized_animation)
+
         # 隐藏定时器
         self.hide_timer = QTimer()
         self.hide_timer.setSingleShot(True)
@@ -139,11 +154,16 @@ class ContentLabel(QTextEdit):
         palette.setColor(QPalette.ColorRole.Base, QColor(0, 0, 0, 0))
         palette.setColor(QPalette.ColorRole.Window, QColor(0, 0, 0, 0))
         self.setPalette(palette)
-        
+
+        self._background_color = self.palette().color(self.backgroundRole())
+
         # 设置视口背景透明
         self.viewport().setAutoFillBackground(False)
 
     def get_word_at_position(self, pos):
+        if not self.data_is_initialized: 
+            return 
+        
         cursor_at_pos = self.cursorForPosition(pos)
         if cursor_at_pos.isNull():
             return "", []
@@ -167,6 +187,8 @@ class ContentLabel(QTextEdit):
             self.add_selected_word(word)
 
     def add_selected_word(self, word):
+        if not self.data_is_initialized:
+            return
         is_custom = True
         original_word = word
         lemma_word = self.text_to_lemma(word)
@@ -232,6 +254,19 @@ class ContentLabel(QTextEdit):
         return rects
 
     def paintEvent(self, event):
+        
+        if self._background_animation_opacity > 0:
+            painter = QPainter(self.viewport())
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            
+            # 动画背景色
+            anim_color = QColor(self.flash_color_selections[self.flash_color_select][0],
+                                self.flash_color_selections[self.flash_color_select][1],
+                                self.flash_color_selections[self.flash_color_select][2],
+                                int(self.flash_color_selections[self.flash_color_select][3] * self._background_animation_opacity))
+            painter.fillRect(self.viewport().rect(), anim_color)
+            painter.end()
+        
         super().paintEvent(event)
         if self._highlight_opacity > 0 and hasattr(self, "_highlight_rects"):
             painter = QPainter(self.viewport())
@@ -271,11 +306,18 @@ class ContentLabel(QTextEdit):
                         painter.drawLine(rect.left(), rect.bottom()+2, rect.right(), rect.bottom()+2)
                 painter.end()
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)   # 保持默认行为
+        self.adjust_height_to_content()
+
     def mouseMoveEvent(self, event):
         """鼠标移动事件"""
         # 获取鼠标位置的单词
+        super().mouseMoveEvent(event)
         if time.time() - self.last_checked_word_timestamp < 0.05:
             super().mouseMoveEvent(event)
+            return
+        if not self.data_is_initialized:
             return
         word, word_rects = self.get_word_at_position(event.position().toPoint()) 
         self.last_checked_word_timestamp = time.time()
@@ -290,7 +332,6 @@ class ContentLabel(QTextEdit):
                 self.hide_timer.start(300)
 
         
-        super().mouseMoveEvent(event)
     
     def leaveEvent(self, event):
         """鼠标离开事件"""
@@ -306,7 +347,6 @@ class ContentLabel(QTextEdit):
         self.highlight_animation.setEndValue(1)
         self.highlight_animation.start()
         
-    
     def hide_highlight(self):
         """隐藏高亮"""
         if not self.hovered_word:
@@ -331,16 +371,63 @@ class ContentLabel(QTextEdit):
             self.viewport().update()
             return
         self._highlight_x, self._highlight_y, self._highlight_width, self._highlight_height = value
-    
+
+    def get_background_animation_opacity(self):
+            return self._background_animation_opacity
+
+    def set_background_animation_opacity(self, value):
+        self._background_animation_opacity = value
+        self.update()  # 触发重绘
+
     highlight_opacity = Property(float, get_highlight_opacity, set_highlight_opacity)
     highlight_rect = Property(list, get_highlight_rect, set_highlight_rect)
+    background_animation_opacity = Property(float, get_background_animation_opacity, set_background_animation_opacity)
+
+
+    def start_data_initialized_animation_fadeout(self):
+        """执行淡出"""
+        self.background_animation.setStartValue(1.0)
+        self.background_animation.setEndValue(0.0)
+        self.background_animation.start()
+        
+        # 断开之前的连接，连接新的
+        try:
+            self.background_animation.finished.disconnect(self.start_data_initialized_animation_fadeout)
+        except:
+            pass
+
+    def start_data_initialized_animation(self):
+        print(111)
+        self.flash_color_select = "green"
+        self.background_animation.setStartValue(0.0)
+        self.background_animation.setEndValue(1.0)
+        self.background_animation.start()    
+
+        self.background_animation.finished.connect(self.start_data_initialized_animation_fadeout)
     
-    def setPlainText(self, text):
+    def start_data_not_initialized_animation(self):
+        self.flash_color_select = "red"
+        self.background_animation.setStartValue(0.0)
+        self.background_animation.setEndValue(1.0)
+        self.background_animation.start()    
+
+
+    def data_initialization(self, text, selected_words):
+        self.text_split_result = list((self.text_to_lemma(w), s, e) for (w, s, e) in jieba.tokenize(text))
+        self.data_is_initialized = True
+        for w in selected_words: 
+            self.add_selected_word(w)
+        self.dataInitialized.emit()
+
+    def setPlainText(self, text, selected_words=[]):
         """重写设置文本方法"""
         super().setPlainText(text)
         # 重置高亮状态
+        self.data_is_initialized = False
+        self.start_data_not_initialized_animation()
 
-        self.text_split_result = list((self.text_to_lemma(w), s, e) for (w, s, e) in jieba.tokenize(text))
+        threading.Thread(target=self.data_initialization, args=(text, selected_words,)).start()
+
         self.hovered_word = ""
         self.hovered_word_rect = QRect()
         self._highlight_opacity = 0
@@ -450,8 +537,9 @@ class SplitLine(QWidget):
         # 绘制矩形作为分隔线
         painter.drawRect(0, 0, self.width(), self.thickness)
 
+
 class ContentBlock(QWidget):     
-    def __init__(self, original_text, translated_text, parent=None):         
+    def __init__(self, original_text, translated_text, parent=None, block_id=1):         
         super().__init__(parent)       
 
         self.setObjectName("ContentBlock")  
@@ -460,10 +548,9 @@ class ContentBlock(QWidget):
         layout = QVBoxLayout(self)
         
         # 创建标签并设置自动换行和对齐方式
-        original_label = ContentLabel(original_text, self, style_type=1)
+        original_label = ContentLabel(f"Block{block_id}\n" + original_text, self, style_type=1)
         
         translated_label = ContentLabel(translated_text, self, style_type=2)
-        
         layout.addWidget(original_label)         
         layout.addWidget(SplitLine(thickness=1, color=QColor(255, 255, 255, 100)))         
         layout.addWidget(translated_label)          
