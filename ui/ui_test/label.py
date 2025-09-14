@@ -1,15 +1,15 @@
 import sys
 from PySide6.QtWidgets import (
-    QApplication, QWidget, QVBoxLayout, QLabel, QScrollArea, QSizePolicy
+    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea, QSizePolicy
 )
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPainter, QColor, QBrush
 
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QWidget, QGraphicsOpacityEffect
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPainter, QColor, QBrush
 from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QLabel, QGraphicsBlurEffect, QPushButton, QMainWindow, QTextEdit
-from PySide6.QtCore import Qt, QRect, QPropertyAnimation, QEasingCurve, QTimer, Signal, Property, QPoint
+from PySide6.QtCore import Qt, QRect, QPropertyAnimation, QEasingCurve, QTimer, Signal, Property, QPoint, QParallelAnimationGroup
 from PySide6.QtGui import QPainter, QTextCursor, QTextDocument, QFont, QColor, QPen, QTextCharFormat, QPalette, QBrush
 
 import re
@@ -17,6 +17,7 @@ import sys
 import time
 import jieba
 import spacy
+import threading
 
 sample_original_text = """
 1.Can Peanut Allergies Be Cured?
@@ -29,6 +30,7 @@ class ContentLabel(QTextEdit):
     textSelected = Signal(str)  # 选中文本信号，包含选中的文本
     textRemoved = Signal(str)  # 删除文本信号，包含删除的文本
 
+    dataInitialized = Signal()
     
     def __init__(self, text="", parent=None, style_type=1):
         super().__init__(text, parent)
@@ -67,11 +69,24 @@ class ContentLabel(QTextEdit):
         self.highlight_animation = QPropertyAnimation(self, b"highlight_opacity")
         self.highlight_animation.setDuration(200)
         self.highlight_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+        self._background_animation_opacity = 0.0
+        self.flash_color_selections = {
+            "green": (150, 220, 160, 100), 
+            "red": (220, 150, 160, 100)
+        }
+        self.flash_color_select = "green"
+        self.background_animation = QPropertyAnimation(self, b"background_animation_opacity")
+        self.background_animation.setDuration(500)  # 1秒
+        self.background_animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
         
+
         self.move_animation = QPropertyAnimation(self, b"highlight_rect")
         self.move_animation.setDuration(300)
         self.move_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
         
+        self.dataInitialized.connect(self.start_data_initialized_animation)
+
         # 隐藏定时器
         self.hide_timer = QTimer()
         self.hide_timer.setSingleShot(True)
@@ -139,11 +154,16 @@ class ContentLabel(QTextEdit):
         palette.setColor(QPalette.ColorRole.Base, QColor(0, 0, 0, 0))
         palette.setColor(QPalette.ColorRole.Window, QColor(0, 0, 0, 0))
         self.setPalette(palette)
-        
+
+        self._background_color = self.palette().color(self.backgroundRole())
+
         # 设置视口背景透明
         self.viewport().setAutoFillBackground(False)
 
     def get_word_at_position(self, pos):
+        if not self.data_is_initialized: 
+            return 
+        
         cursor_at_pos = self.cursorForPosition(pos)
         if cursor_at_pos.isNull():
             return "", []
@@ -167,6 +187,8 @@ class ContentLabel(QTextEdit):
             self.add_selected_word(word)
 
     def add_selected_word(self, word):
+        if not self.data_is_initialized:
+            return
         is_custom = True
         original_word = word
         lemma_word = self.text_to_lemma(word)
@@ -232,6 +254,19 @@ class ContentLabel(QTextEdit):
         return rects
 
     def paintEvent(self, event):
+        
+        if self._background_animation_opacity > 0:
+            painter = QPainter(self.viewport())
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            
+            # 动画背景色
+            anim_color = QColor(self.flash_color_selections[self.flash_color_select][0],
+                                self.flash_color_selections[self.flash_color_select][1],
+                                self.flash_color_selections[self.flash_color_select][2],
+                                int(self.flash_color_selections[self.flash_color_select][3] * self._background_animation_opacity))
+            painter.fillRect(self.viewport().rect(), anim_color)
+            painter.end()
+        
         super().paintEvent(event)
         if self._highlight_opacity > 0 and hasattr(self, "_highlight_rects"):
             painter = QPainter(self.viewport())
@@ -278,8 +313,11 @@ class ContentLabel(QTextEdit):
     def mouseMoveEvent(self, event):
         """鼠标移动事件"""
         # 获取鼠标位置的单词
+        super().mouseMoveEvent(event)
         if time.time() - self.last_checked_word_timestamp < 0.05:
             super().mouseMoveEvent(event)
+            return
+        if not self.data_is_initialized:
             return
         word, word_rects = self.get_word_at_position(event.position().toPoint()) 
         self.last_checked_word_timestamp = time.time()
@@ -294,7 +332,6 @@ class ContentLabel(QTextEdit):
                 self.hide_timer.start(300)
 
         
-        super().mouseMoveEvent(event)
     
     def leaveEvent(self, event):
         """鼠标离开事件"""
@@ -310,7 +347,6 @@ class ContentLabel(QTextEdit):
         self.highlight_animation.setEndValue(1)
         self.highlight_animation.start()
         
-    
     def hide_highlight(self):
         """隐藏高亮"""
         if not self.hovered_word:
@@ -335,16 +371,63 @@ class ContentLabel(QTextEdit):
             self.viewport().update()
             return
         self._highlight_x, self._highlight_y, self._highlight_width, self._highlight_height = value
-    
+
+    def get_background_animation_opacity(self):
+            return self._background_animation_opacity
+
+    def set_background_animation_opacity(self, value):
+        self._background_animation_opacity = value
+        self.update()  # 触发重绘
+
     highlight_opacity = Property(float, get_highlight_opacity, set_highlight_opacity)
     highlight_rect = Property(list, get_highlight_rect, set_highlight_rect)
+    background_animation_opacity = Property(float, get_background_animation_opacity, set_background_animation_opacity)
+
+
+    def start_data_initialized_animation_fadeout(self):
+        """执行淡出"""
+        self.background_animation.setStartValue(1.0)
+        self.background_animation.setEndValue(0.0)
+        self.background_animation.start()
+        
+        # 断开之前的连接，连接新的
+        try:
+            self.background_animation.finished.disconnect(self.start_data_initialized_animation_fadeout)
+        except:
+            pass
+
+    def start_data_initialized_animation(self):
+        print(111)
+        self.flash_color_select = "green"
+        self.background_animation.setStartValue(0.0)
+        self.background_animation.setEndValue(1.0)
+        self.background_animation.start()    
+
+        self.background_animation.finished.connect(self.start_data_initialized_animation_fadeout)
     
-    def setPlainText(self, text):
+    def start_data_not_initialized_animation(self):
+        self.flash_color_select = "red"
+        self.background_animation.setStartValue(0.0)
+        self.background_animation.setEndValue(1.0)
+        self.background_animation.start()    
+
+
+    def data_initialization(self, text, selected_words):
+        self.text_split_result = list((self.text_to_lemma(w), s, e) for (w, s, e) in jieba.tokenize(text))
+        self.data_is_initialized = True
+        for w in selected_words: 
+            self.add_selected_word(w)
+        self.dataInitialized.emit()
+
+    def setPlainText(self, text, selected_words=[]):
         """重写设置文本方法"""
         super().setPlainText(text)
         # 重置高亮状态
+        self.data_is_initialized = False
+        self.start_data_not_initialized_animation()
 
-        self.text_split_result = list((self.text_to_lemma(w), s, e) for (w, s, e) in jieba.tokenize(text))
+        threading.Thread(target=self.data_initialization, args=(text, selected_words,)).start()
+
         self.hovered_word = ""
         self.hovered_word_rect = QRect()
         self._highlight_opacity = 0
@@ -403,6 +486,7 @@ class ContentLabel(QTextEdit):
 
             return
 
+        super().keyPressEvent(event)
 
 class SplitLine(QWidget):
     def __init__(self, thickness=1, color=QColor(255, 255, 255, 100), parent=None):
@@ -454,8 +538,9 @@ class SplitLine(QWidget):
         # 绘制矩形作为分隔线
         painter.drawRect(0, 0, self.width(), self.thickness)
 
+
 class ContentBlock(QWidget):     
-    def __init__(self, original_text, translated_text, parent=None):         
+    def __init__(self, original_text, translated_text, parent=None, block_id=1):         
         super().__init__(parent)       
 
         self.setObjectName("ContentBlock")  
@@ -464,10 +549,9 @@ class ContentBlock(QWidget):
         layout = QVBoxLayout(self)
         
         # 创建标签并设置自动换行和对齐方式
-        original_label = ContentLabel(original_text, self, style_type=1)
+        original_label = ContentLabel(f"Block{block_id}\n" + original_text, self, style_type=1)
         
         translated_label = ContentLabel(translated_text, self, style_type=2)
-        
         layout.addWidget(original_label)         
         layout.addWidget(SplitLine(thickness=1, color=QColor(255, 255, 255, 100)))         
         layout.addWidget(translated_label)          
@@ -585,7 +669,285 @@ class ContentBlock(QWidget):
         if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
             self._start_delete_animation()
             return
+        super().keyPressEvent(event)
 
+
+class NormalButton(QPushButton):
+    def __init__(self, text, parent=None, state=1, text_color="white"):
+        super().__init__(text, parent)
+
+        self.setStyleSheet(f"""
+            QPushButton {{
+                background-color: rgba(70, 70, 70, 200);
+                color: {text_color};
+                border: none;
+                padding: 6px 14px;
+                border-radius: 6px;
+            }}
+            QPushButton:hover {{
+                background-color: rgba(100, 100, 100, 170);
+            }}
+        """)
+        self.state = state
+
+        # 添加透明度效果
+        self.opacity_effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self.opacity_effect)
+        self.opacity_effect.setOpacity(1.0)
+
+        # 修复1: 使用 maximumWidth 和 minimumWidth 同时控制宽度动画
+        self.width_animation = QPropertyAnimation(self, b"maximumWidth")
+        self.width_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self.width_animation.setDuration(300)
+
+        # 保存初始宽度
+        self.initial_width = self.sizeHint().width()
+        
+        # 修复2: 添加动画完成后的布局更新信号
+        self.width_animation.finished.connect(self._on_animation_finished)
+
+    def _on_animation_finished(self):
+        """动画完成后更新父布局"""
+        if self.parent():
+            parent_layout = self.parent().layout()
+            if parent_layout:
+                parent_layout.update()
+                parent_layout.activate()
+
+    def start_show_animation(self, if_change_state=1):
+        self.state = 1
+        self.show()  # 确保按钮可见
+        
+        # 重置尺寸约束
+        self.setMaximumWidth(16777215)  # Qt的默认最大宽度
+        self.setMinimumWidth(0)
+
+        # 宽度恢复动画
+        self.width_animation.stop()
+        # 从当前实际宽度开始
+        current_width = self.width()
+        self.width_animation.setStartValue(current_width)
+        self.width_animation.setEndValue(self.initial_width)
+        
+        # 修复：同时设置最小和最大宽度
+        self.width_animation.valueChanged.connect(self._update_width_constraints)
+        self.width_animation.start()
+
+    def start_hide_animation(self, if_change_state=1):
+        self.state = 0
+        # 宽度缩小到0
+        self.width_animation.stop()
+        current_width = self.width()
+        self.width_animation.setStartValue(current_width)
+        self.width_animation.setEndValue(0)
+        
+        # 修复：同时设置最小和最大宽度
+        self.width_animation.valueChanged.connect(self._update_width_constraints)
+        self.width_animation.start()
+
+    def _update_width_constraints(self, width):
+        """更新宽度约束，确保动画正确显示"""
+        self.setMaximumWidth(int(width))
+        self.setMinimumWidth(int(width))
+
+
+class BottomBar(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setWindowFlag(Qt.FramelessWindowHint)
+
+        self.style_args = {
+            "background-color": QColor(20, 20, 20, 200),
+            "font-size": "16px",
+            "padding": "10px",
+            "border-radius": 10
+        }
+        self.state = 1
+        self.animation_running = False
+
+        # 创建按钮
+        self.read_all_button = NormalButton("Read All", self)
+        self.read_all_button.setFixedHeight(30)
+        self.stop_button = NormalButton("Stop", self)
+        self.stop_button.setFixedHeight(30)
+        self.continue_button = NormalButton("Continue", self)
+        self.continue_button.setFixedHeight(30)
+        self.cancel_button = NormalButton("Cancel", self)
+        self.cancel_button.setFixedHeight(30)
+        self.clear_button = NormalButton("Clear", self, text_color="red")
+        self.clear_button.setFixedHeight(30)
+
+        self.stop_button.start_hide_animation()
+        self.continue_button.start_hide_animation()
+        self.cancel_button.start_hide_animation()
+
+        # 创建更灵活的布局
+        content_layout = QHBoxLayout(self)
+        content_layout.setContentsMargins(20, 0, 20, 0)
+        content_layout.setSpacing(10)
+        
+        # 左侧按钮组
+        left_group = QHBoxLayout()
+        left_group.setSpacing(10)
+        left_group.addWidget(self.read_all_button)
+        left_group.addWidget(self.stop_button)
+        left_group.addWidget(self.continue_button)
+        left_group.addWidget(self.cancel_button)
+        left_group.addStretch(0)
+        
+        content_layout.addLayout(left_group)
+        content_layout.addStretch(1)
+        content_layout.addWidget(self.clear_button)
+
+        # 设置按钮功能
+        def start_read(): 
+            self.read_all_button.start_hide_animation()
+            QTimer.singleShot(50, lambda: self.stop_button.start_show_animation())
+            QTimer.singleShot(50, lambda: self.cancel_button.start_show_animation())
+
+        self.read_all_button.clicked.connect(start_read)
+
+        def stop_read():
+            self.stop_button.start_hide_animation()
+            QTimer.singleShot(100, lambda: self.continue_button.start_show_animation())
+
+        def cancel_read():
+            self.stop_button.start_hide_animation()
+            self.cancel_button.start_hide_animation()
+            self.continue_button.start_hide_animation()
+            QTimer.singleShot(350, lambda: self.read_all_button.start_show_animation())
+
+        def continue_read():
+            self.continue_button.start_hide_animation()
+            QTimer.singleShot(50, lambda: self.stop_button.start_show_animation())
+
+        self.stop_button.clicked.connect(stop_read)
+        self.cancel_button.clicked.connect(cancel_read)
+        self.continue_button.clicked.connect(continue_read)
+
+        # =============== 修复自身动画配置 ===============
+
+
+        # 几何形状动画 (位置和大小)
+        self.geometry_animation = QPropertyAnimation(self, b"geometry")
+        self.geometry_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self.geometry_animation.setDuration(250)
+        
+        # 动画状态标志
+        self.is_visible_state = True
+        self.animation_running = False
+
+
+    def start_show_animation(self):
+        """显示 BottomBar 的动画"""
+        if self.animation_running or self.is_visible_state:
+            return
+            
+        self.animation_running = True
+        self.is_visible_state = True
+        
+        
+        # 获取起始和结束位置
+        if self.parent():
+            current_rect = self.geometry()
+            end_geo = self.parent().get_bar_geo(state=1)    # 显示状态
+            print(end_geo)
+            
+            # 设置几何动画
+            self.geometry_animation.setStartValue(current_rect)
+            self.geometry_animation.setEndValue(QRect(*end_geo))
+        
+            
+            # 动画完成后的处理
+            def on_show_finished():
+                self.animation_running = False
+                self.state = 1
+            
+            # 清除之前的连接
+            try:
+                self.geometry_animation.finished.disconnect()
+            except:
+                pass
+                
+            self.geometry_animation.finished.connect(on_show_finished)
+            self.geometry_animation.start()
+
+    def start_hide_animation(self):
+        """隐藏 BottomBar 的动画"""
+        if self.animation_running or not self.is_visible_state:
+            return
+            
+        self.animation_running = True
+        self.is_visible_state = False
+        
+        # 获取起始和结束位置
+        if self.parent():
+            current_rect = self.geometry()
+            end_geo = self.parent().get_bar_geo(state=0)   # 隐藏状态
+            
+            # 设置几何动画
+            self.geometry_animation.setStartValue(current_rect)
+            self.geometry_animation.setEndValue(QRect(*end_geo))
+            
+            
+            # 动画完成后隐藏 widget
+            def on_hide_finished():
+                self.animation_running = False
+                self.state = 0
+            
+            # 清除之前的连接
+            try:
+                self.geometry_animation.finished.disconnect()
+            except:
+                pass
+                
+            self.geometry_animation.finished.connect(on_hide_finished)
+            self.geometry_animation.start()
+
+        
+    def paintEvent(self, event):
+        # 修复：添加安全检查，避免绘制冲突
+        if not event or not self.isVisible():
+            return
+            
+        painter = QPainter(self)
+        
+        # 修复：检查painter是否成功初始化
+        if not painter.isActive():
+            return
+            
+        try:
+            painter.setRenderHint(QPainter.Antialiasing)
+            brush = QBrush(self.style_args["background-color"])
+            painter.setBrush(brush)
+            painter.setPen(Qt.NoPen)
+            painter.drawRoundedRect(self.rect(), self.style_args["border-radius"], self.style_args["border-radius"])
+        except Exception as e:
+            print(f"绘制错误: {e}")
+        finally:
+            # 修复：确保painter正确结束
+            if painter.isActive():
+                painter.end()
+
+    def closeEvent(self, event):
+        """修复：清理资源，防止内存泄漏"""
+        # 停止所有动画
+        if hasattr(self, 'show_animation_group'):
+            self.show_animation_group.stop()
+        if hasattr(self, 'hide_animation_group'):
+            self.hide_animation_group.stop()
+        super().closeEvent(event)
+
+    def __del__(self):
+        """修复：析构时清理动画资源"""
+        try:
+            if hasattr(self, 'show_animation_group'):
+                self.show_animation_group.stop()
+            if hasattr(self, 'hide_animation_group'):
+                self.hide_animation_group.stop()
+        except:
+            pass
 
 class BlurWindow(QWidget):
     def __init__(self):
@@ -607,13 +969,9 @@ class BlurWindow(QWidget):
         scroll_area.setFrameShape(QScrollArea.NoFrame)  # 去掉边框
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)  # 只要垂直滚动条
         
-        # 关键修改：设置 QScrollArea 背景透明
         scroll_area.setStyleSheet("QScrollArea { background: transparent; }")
-
-        # 内容容器
         content_widget = QWidget()
         content_widget.setAutoFillBackground(False)
-        # 关键修改：设置内容容器背景透明
         content_widget.setStyleSheet("QWidget { background: transparent; }")
         
         content_layout = QVBoxLayout(content_widget)
@@ -627,33 +985,67 @@ class BlurWindow(QWidget):
             block.set_split_line(split_line)
 
             content_layout.addWidget(block)
-
             content_layout.addWidget(split_line)
 
         content_layout.addStretch(2)  # 底部弹性空间
 
         scroll_area.setWidget(content_widget)
 
+        # ========== 创建BottomBar ==========
+        self.bottom_bar = BottomBar()
+        self.bottom_bar.setParent(self)
+        self.bottom_bar.setFixedHeight(60)
+        self.bar_height = 60
+
         # ========== 主布局 ==========
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 10, 0, 10)  # 让scroll_area填充整个窗口
+        layout.setContentsMargins(0, 10, 0, 10)
         layout.addWidget(scroll_area)
         self.setLayout(layout)
 
     def paintEvent(self, event):
-        """绘制模糊窗口背景"""
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         brush = QBrush(self.style_args["background-color"])
         painter.setBrush(brush)
         painter.setPen(Qt.NoPen)
         painter.drawRoundedRect(self.rect(), self.style_args["border-radius"], self.style_args["border-radius"])
+    
+    def get_bar_geo(self, state=1):
+        print(state)
+        if state:
+            # 计算BottomBar的宽度和位置
+            window_width = self.width()
+            bar_width = int(window_width * 0.8)  # 横向占窗口宽度的70%
+            bar_height = self.bar_height
+            
+            # 居中横向位置，底部对齐（留出一点边距）
+            x = (window_width - bar_width) // 2
+            y = self.height() - bar_height - 20  # 距离底部20px
+            return (x, y, bar_width, bar_height)
+        else: 
+            # 计算BottomBar的宽度和位置
+            window_width = self.width()
+            bar_width = int(window_width) 
+            x = (window_width - bar_width) // 2
+            y = self.height() # 距离底部20px
+            return (x, y, bar_width, 0)
+            
+
+    def resizeEvent(self, event):
+        """窗口大小改变时调整BottomBar的位置和大小"""
+        super().resizeEvent(event)
+        
+        self.bottom_bar.setGeometry(*self.get_bar_geo(self.bottom_bar.state))
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Escape:
             self.close()
-        super().keyPressEvent(event)  # 不要吃掉事件
-
+        elif event.key() == Qt.Key.Key_0:
+            self.bottom_bar.start_hide_animation()
+        elif event.key() == Qt.Key.Key_1:
+            self.bottom_bar.start_show_animation()
+        super().keyPressEvent(event)
 
 
 if __name__ == "__main__":
