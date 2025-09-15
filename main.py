@@ -1,6 +1,6 @@
-from ui.custom_widgets import BlurWindow, BottomBar, NormalButton, ContentBlock, SplitLine, ContentLabel
+from ui.custom_widgets import BlurWindow, BottomBar, NormalButton, ContentBlock, SplitLine, ContentLabel, VocabularyCard
 from functions.text_collection import get_selected_text_with_clipboard
-
+from functions.translate_generation import get_translated_text_stream, get_definition
 
 import sys
 import time
@@ -14,18 +14,34 @@ class MainWindow(BlurWindow):
         self.setWindowTitle("Reading Helper")
 
 
-        self.text_history = []
         self.current_text = ""
         self.confirmed = False
+        self.get_definition_func = get_definition
+
         threading.Thread(target=self.listening_text, daemon=True).start()
+    
+    def activate_vocabulary_card(self, word): 
+        data = {} 
+        try:
+            data = self.get_definition_func(word)
+        except:
+            return 
+        if not data: 
+            return
+        
+        print("data is ready")
+        self.card = VocabularyCard(data)
+        self.card.setWindowFlag(Qt.Window) 
+        self.card.setGeometry(self.geometry().left() - 400, self.geometry().top(), 400, 0)
+        self.card.show()
 
     def sync_selected(self, text, operation="add"):
         deprecated_select_funcs = []
         deprecated_remove_funcs = []
         if operation == "add":
-            print(f"Global Adding text: {text}")
             if text not in self.global_selected_texts:
                 self.global_selected_texts.append(text)
+                self.activate_vocabulary_card(text)
             for func in self.add_selected_text_funcs:
                 try:
                     func(text, need_emit=False)
@@ -33,7 +49,6 @@ class MainWindow(BlurWindow):
                     print(f"Error in add_selected_text_funcs: {e}")
                     deprecated_select_funcs.append(func)
         elif operation == "remove":
-            print(f"Global Removing text: {text}")
             if text in self.global_selected_texts:
                 self.global_selected_texts.remove(text)
             for func in self.remove_selected_text_funcs:
@@ -61,7 +76,7 @@ class MainWindow(BlurWindow):
 
                     self.current_text = selected_text
                     self.text_history.append(selected_text)
-                    self.addContentBlockSignal.emit(self.current_text, "Translating...", self.sync_selected)
+                    self.addContentBlockSignal.emit(self.current_text, (get_translated_text_stream, self.current_text), self.sync_selected)
                     self.confirmed = False
                     
 

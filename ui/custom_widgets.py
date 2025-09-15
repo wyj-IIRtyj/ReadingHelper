@@ -27,9 +27,10 @@ class ContentLabel(QTextEdit):
     textRemoved = Signal(str)  # 删除文本信号，包含删除的文本
 
     dataInitialized = Signal()
+    realTimeChangeTextSignal = Signal(str)
     
-    def __init__(self, text="", parent=None, style_type=1):
-        super().__init__(text, parent)
+    def __init__(self, text="", parent=None, style_type=1, global_selected=[]):
+        super().__init__("", parent)
         self.parent = parent
         # 设置为只读模式
         self.setReadOnly(True)
@@ -83,6 +84,7 @@ class ContentLabel(QTextEdit):
         self.move_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
         
         self.dataInitialized.connect(self.start_data_initialized_animation)
+        self.realTimeChangeTextSignal.connect(self.real_time_change_text)
 
         # 隐藏定时器
         self.hide_timer = QTimer()
@@ -95,7 +97,7 @@ class ContentLabel(QTextEdit):
         
         # 设置文本内容
         if text:
-            self.setPlainText(text)
+            self.setPlainText(text, global_selected)
     
     # 2. 添加自动调整高度的方法
     def adjust_height_to_content(self):
@@ -239,7 +241,6 @@ class ContentLabel(QTextEdit):
                 self.viewport().update()
 
     def remove_selected_word(self, word):
-        print(f"Removing word: {word}")
         word = self.text_to_lemma(word)
         self.selected_words = [item for item in self.selected_words if self.text_to_lemma(item[0]) != word]
         self.selected_custom_words = [item for item in self.selected_custom_words if self.text_to_lemma(item[0]) != word]
@@ -463,24 +464,50 @@ class ContentLabel(QTextEdit):
 
         QTimer.singleShot(100, self.resizeEvent)
 
-
+    def stream_data_initialiaze(self, stream):
         
+        text = "" 
+        for piece in stream[0](stream[1]): 
+            text += piece
+            self.realTimeChangeTextSignal.emit(text)
+            self.text = text
+        self.data_initialization(text, selected_words=[])
+        
+    def real_time_change_text(self, text):
+        super().setPlainText(text)
+        self.adjust_height_to_content()
+        self.parent.adjust_main_window_height_callback()
 
     def setPlainText(self, text, selected_words=[]):
         """重写设置文本方法"""
-        super().setPlainText(text)
-        # 重置高亮状态
-        self.data_is_initialized = False
-        self.start_data_not_initialized_animation()
+        if self.style_type == 1:
+            super().setPlainText(text)
+            self.text = text
+            # 重置高亮状态
+            self.data_is_initialized = False
+            self.start_data_not_initialized_animation()
 
-        threading.Thread(target=self.data_initialization, args=(text, selected_words,)).start()
+            threading.Thread(target=self.data_initialization, args=(text, selected_words,)).start()
 
-        self.hovered_word = ""
-        self.hovered_word_rect = QRect()
-        self._highlight_opacity = 0
-            
-        # 自动调整高度
-        self.adjust_height_to_content()
+            self.hovered_word = ""
+            self.hovered_word_rect = QRect()
+            self._highlight_opacity = 0
+                
+            # 自动调整高度
+            self.adjust_height_to_content()
+        else: 
+            self.data_is_initialized = False
+            self.start_data_not_initialized_animation()
+            threading.Thread(target=self.stream_data_initialiaze, args=(text,)).start()
+
+            self.hovered_word = ""
+            self.hovered_word_rect = QRect()
+            self._highlight_opacity = 0
+                
+            # 自动调整高度
+            self.adjust_height_to_content()
+
+
 
     def wheelEvent(self, event):
         event.ignore()  # 忽略滚动事件（交给外层容器处理）
@@ -510,7 +537,6 @@ class ContentLabel(QTextEdit):
                 start_pos = cursor.selectionStart()
                 end_pos = cursor.selectionEnd()
                 existed_words = [w[0] for w in self.selected_words+self.selected_custom_words]
-                print(f"选中文字: '{selected_text}', 起始位置: {start_pos}, 结束位置: {end_pos}")
                 if lemma_selected in existed_words:
                     self.remove_selected_word(selected_text)
                     self.textRemoved.emit(selected_text)
@@ -523,10 +549,9 @@ class ContentLabel(QTextEdit):
                 if self.text_to_lemma(self.hovered_word) in [w[0] for w in self.selected_words]:
                     self.remove_selected_word(self.hovered_word)
                     self.textRemoved.emit(self.text_to_lemma(self.hovered_word))
-                    print(f"删除单词: {self.hovered_word}")
+                
                 else:
                     self.add_selected_word(self.hovered_word)
-                    print(f"选中单词: {self.hovered_word}")
 
             return
 
@@ -585,24 +610,28 @@ class SplitLine(QWidget):
 
 
 class ContentBlock(QWidget):     
-    def __init__(self, original_text, translated_text, parent=None, block_id=1, adjust_main_window_height_callback=None, sync_func=None):          
+    def __init__(self, original_text, stream, parent=None, block_id=1, adjust_main_window_height_callback=None, sync_func=None, del_action_callback=None):
+          
         super().__init__(parent)       
 
         self.setObjectName("ContentBlock")  
         self.setMouseTracking(True)
         self.split_line = None
         self.adjust_main_window_height_callback = adjust_main_window_height_callback    
+        self.del_action_callback = del_action_callback
         
         layout = QVBoxLayout(self)
         
         # 创建标签并设置自动换行和对齐方式
-        original_label = ContentLabel(original_text, self, style_type=1)
+        original_label = ContentLabel(original_text, self, style_type=1, global_selected=self.parent().global_selected_texts)
         
-        translated_label = ContentLabel(translated_text, self, style_type=2)
+        translated_label = ContentLabel(stream, self, style_type=2)
         original_label.textSelected.connect(lambda text: sync_func(text, operation="add") if sync_func else None)
         translated_label.textSelected.connect(lambda text: sync_func(text, operation="add") if sync_func else None)
         original_label.textRemoved.connect(lambda text: sync_func(text, operation="remove") if sync_func else None)
         translated_label.textRemoved.connect(lambda text: sync_func(text, operation="remove") if sync_func else None)
+
+        self.labels = [original_label, translated_label]
 
         self.add_select_funcs = [original_label.add_selected_word, translated_label.add_selected_word]
         self.remove_select_funcs = [original_label.remove_selected_word, translated_label.remove_selected_word]
@@ -677,8 +706,9 @@ class ContentBlock(QWidget):
             self.split_line.close()
             self.split_line.deleteLater()
         self.close()
-        self.deleteLater()
-        QTimer.singleShot(100, self.adjust_main_window_height_callback)  # 延迟更新高度，确保布局稳定
+        if self.del_action_callback:
+            self.del_action_callback(self.labels, self)
+        self.deleteLater() # 延迟更新高度，确保布局稳定
         
         
     def _start_close_animation(self):
@@ -737,6 +767,7 @@ class ContentBlock(QWidget):
 class NormalButton(QPushButton):
     def __init__(self, text, parent=None, state=1, text_color="white"):
         super().__init__(text, parent)
+
 
         self.setStyleSheet(f"""
             QPushButton {{
@@ -813,8 +844,204 @@ class NormalButton(QPushButton):
         self.setMinimumWidth(int(width))
 
 
+class VocabularyCard(QWidget):
+    def __init__(self, vocab_data: dict, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TranslucentBackground)  # 半透明背景
+        self.setWindowFlag(Qt.FramelessWindowHint) # type: ignore
+        self.setMouseTracking(True)
+        
+        # 设置窗口可调整大小
+        self.setMinimumWidth(350)
+
+        # 卡片样式配置
+        self.style_args = {
+            "background-color": QColor(40, 40, 40, 230),
+            "font-color": QColor(240, 240, 240),
+            "border-radius": 12,
+            "padding": 12
+        }
+
+        # 动画状态标记
+        self.is_animating = False
+
+        self._drag_active = False
+        self._drag_position = QPoint(0, 0)
+
+
+        # 外层布局
+        self.layout = QVBoxLayout(self)
+        self.layout.setContentsMargins(20, 20, 20, 20)
+        self.layout.setSpacing(8)
+
+        # 创建富文本编辑器
+        self.text_edit = QTextEdit()
+        self._setup_text_edit()
+        
+        # 设置内容
+        self._setup_content(vocab_data)
+        
+        self.layout.addWidget(self.text_edit)
+
+        # 来源标签（保持在底部）
+        source_urls = vocab_data.get("sourceUrls", [])
+        if source_urls:
+            self.layout.addStretch(1)
+            src_label = QLabel(f"Source: {source_urls[0]}")
+            src_label.setStyleSheet("font-size: 12px; color: #888888;")
+            src_label.setAlignment(Qt.AlignCenter)
+            src_label.setWordWrap(True)
+            self.layout.addWidget(src_label)
+
+        # ========= 动画 =========
+        self.geometry_animation = QPropertyAnimation(self, b"geometry")
+        self.geometry_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self.geometry_animation.setDuration(1000)
+        
+        # 连接动画状态信号
+        self.geometry_animation.finished.connect(self._on_animation_finished)
+
+    def _setup_text_edit(self):
+        """配置QTextEdit"""
+        # 禁用编辑
+        self.text_edit.setReadOnly(True)
+        
+        # 去除滚动条
+        self.text_edit.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.text_edit.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        
+        # 去除边框和背景
+        self.text_edit.setFrameStyle(0)
+        self.text_edit.setStyleSheet("""
+            QTextEdit {
+                background: transparent;
+                border: none;
+                padding: 0px;
+            }
+        """)
+        
+        # 禁用文本交互，避免鼠标样式更改
+        self.text_edit.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
+        
+        # 连接文档大小变化信号，自动调整高度
+        self.text_edit.document().documentLayout().documentSizeChanged.connect(self._adjust_text_edit_height)
+
+    def _adjust_text_edit_height(self):
+        """根据内容调整QTextEdit高度"""
+        # 动画期间不调整高度，避免影响动画效果
+        if self.is_animating:
+            return
+            
+        doc_height = int(self.text_edit.document().size().height())
+        self.text_edit.setFixedHeight(doc_height + 5)  # 留一点余量
+
+    def _setup_content(self, vocab_data):
+        """设置富文本内容"""
+        word = vocab_data.get("word", "")
+        phonetics = [p.get("text", "") for p in vocab_data.get("phonetics", []) if p.get("text")]
+        meanings = vocab_data.get("meanings", [])
+
+        # 构建HTML内容
+        html_content = []
+        
+        # 单词标题
+        html_content.append(f'<h1 style="color: white; font-size: 22px; font-weight: bold; margin: 0px 0px 8px 0px;">{word}</h1>')
+        
+        # 音标
+        if phonetics:
+            phonetic_text = " , ".join(phonetics)
+            html_content.append(f'<p style="color: #cccccc; font-size: 16px; margin: 0px 0px 12px 0px;">{phonetic_text}</p>')
+        
+        # 释义
+        for meaning in meanings:
+            part_of_speech = meaning.get("partOfSpeech", "")
+            definitions = meaning.get("definitions", [])
+            synonyms = meaning.get("synonyms", [])
+            
+            # 词性
+            if part_of_speech:
+                html_content.append(f'<p style="color: #88c0d0; font-size: 14px; font-style: italic; margin: 8px 0px 4px 0px;"><strong>{part_of_speech}</strong></p>')
+            
+            # 定义列表
+            for i, definition in enumerate(definitions, 1):
+                def_text = definition.get("definition", "")
+                html_content.append(f'<p style="color: #eeeeee; font-size: 14px; margin: 2px 0px 2px 20px;">{i}. {def_text}</p>')
+            
+            # 近义词
+            if synonyms:
+                syn_text = ", ".join(synonyms)
+                html_content.append(f'<p style="color: #a3be8c; font-size: 13px; margin: 6px 0px 8px 20px;"><strong>Synonyms:</strong> {syn_text}</p>')
+        
+        # 设置HTML内容
+        html = "".join(html_content)
+        self.text_edit.setHtml(html)
+
+    def _on_animation_started(self):
+        """动画开始时的处理"""
+        self.is_animating = True
+        # 暂时移除高度限制，让动画可以自由进行
+        self.text_edit.setMaximumHeight(16777215)  # Qt的默认最大高度
+        self.text_edit.setMinimumHeight(0)
+
+    def _on_animation_finished(self):
+        """动画结束时的处理"""
+        self.is_animating = False
+        # 恢复内容限制，重新调整高度
+        self._adjust_text_edit_height()
+
+    def start_show_animation(self, start_rect: QRect, end_rect: QRect):
+        self._on_animation_started()
+        self.geometry_animation.setStartValue(start_rect)
+        self.geometry_animation.setEndValue(end_rect)
+        self.geometry_animation.start()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        brush = QBrush(self.style_args["background-color"])
+        painter.setBrush(brush)
+        painter.setPen(Qt.NoPen)
+        painter.drawRoundedRect(self.rect(), self.style_args["border-radius"], self.style_args["border-radius"])
+        painter.end()
+
+    def resizeEvent(self, event):
+        """窗口大小改变时的处理"""
+        if self.is_animating:
+            # QTextEdit会自动处理内容重排，无需额外处理
+            return
+        super().resizeEvent(event)
+        # 动画期间不处理resize事件对内容的影响
+    
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self.close()
+            self.deleteLater()
+    
+
+    def mousePressEvent(self, event: QMouseEvent):
+        if event.button() == Qt.LeftButton:
+            self._drag_active = True
+            # 记录鼠标相对窗口左上角的位置
+            self._drag_position = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            event.accept()
+        super().mousePressEvent(event)
+    
+    def mouseReleaseEvent(self, event: QMouseEvent):
+        if event.button() == Qt.LeftButton:
+            self._drag_active = False
+            event.accept()
+        super().mouseReleaseEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent):
+        
+        if self._drag_active and event.buttons() & Qt.LeftButton:
+            self.move(event.globalPosition().toPoint() - self._drag_position)
+            event.accept()
+
+
+
 class BottomBar(QWidget):
-    def __init__(self):
+    def __init__(self, parent=None):
         super().__init__()
         self.setAttribute(Qt.WA_TranslucentBackground) # type: ignore
         self.setWindowFlag(Qt.FramelessWindowHint) # type: ignore
@@ -828,6 +1055,7 @@ class BottomBar(QWidget):
         }
         self.state = 1
         self.animation_running = False
+        self.parent = parent
 
         # 创建按钮
         self.read_all_button = NormalButton("Read All", self)
@@ -885,9 +1113,16 @@ class BottomBar(QWidget):
             self.continue_button.start_hide_animation()
             QTimer.singleShot(50, lambda: self.stop_button.start_show_animation())
 
+        def clear_content():
+            blocks = [*self.parent.content_blocks]
+            for block in blocks: 
+                block._start_close_animation()
+            pass
+
         self.stop_button.clicked.connect(stop_read)
         self.cancel_button.clicked.connect(cancel_read)
         self.continue_button.clicked.connect(continue_read)
+        self.clear_button.clicked.connect(clear_content)
 
         # =============== 修复自身动画配置 ===============
 
@@ -911,9 +1146,9 @@ class BottomBar(QWidget):
         
         
         # 获取起始和结束位置
-        if self.parent():
+        if self.parent:
             current_rect = self.geometry()
-            end_geo = self.parent().get_bar_geo(state=1) 
+            end_geo = self.parent.get_bar_geo(state=1) 
             
             # 设置几何动画
             self.geometry_animation.setStartValue(current_rect)
@@ -943,9 +1178,9 @@ class BottomBar(QWidget):
         self.is_visible_state = False
         
         # 获取起始和结束位置
-        if self.parent():
+        if self.parent:
             current_rect = self.geometry()
-            end_geo = self.parent().get_bar_geo(state=0)   # 隐藏状态 # type: ignore
+            end_geo = self.parent.get_bar_geo(state=0)   # 隐藏状态 # type: ignore
             
             # 设置几何动画
             self.geometry_animation.setStartValue(current_rect)
@@ -1007,11 +1242,16 @@ class BlurWindow(QWidget):
 
 
         self.global_selected_texts = []
+        self.text_history = []
+
 
         self.add_selected_text_funcs = []
         self.remove_selected_text_funcs = []
         self.set_selected_text_funcs = []
 
+        self.content_blocks = []
+
+        self.get_definition_func = lambda word: {}
 
 
         self._height_anim = QPropertyAnimation(self, b"height_prop")
@@ -1054,7 +1294,7 @@ class BlurWindow(QWidget):
         self.scroll_area.setWidget(content_widget)
 
         # ========== 创建BottomBar ==========
-        self.bottom_bar = BottomBar()
+        self.bottom_bar = BottomBar(self)
         self.bottom_bar.setParent(self)
         self.bottom_bar.setFixedHeight(60)
         self.bar_height = 60
@@ -1067,9 +1307,20 @@ class BlurWindow(QWidget):
 
         self.addContentBlockSignal.connect(self.add_content_block)
 
-    def add_content_block(self, original_text, translated_text_stream_func, sync_selected_text_func):
+    def block_del_callback(self, labels, contentblock=None):
+        """内容块删除回调"""
+        for label in labels:
+            if label.text in self.text_history:
+                self.text_history.remove(label.text)
+        if contentblock:
+            if contentblock in self.content_blocks: 
+                self.content_blocks.remove(contentblock)
+        QTimer.singleShot(100, lambda: self.adjust_height_animation(False))
+
+    def add_content_block(self, original_text, stream, sync_selected_text_func):
         """添加内容块"""
-        block = ContentBlock(original_text, translated_text_stream_func, adjust_main_window_height_callback=self.adjust_height_animation, sync_func=sync_selected_text_func) # type: ignore
+        block = ContentBlock(original_text, stream, adjust_main_window_height_callback=self.adjust_height_animation, sync_func=sync_selected_text_func, del_action_callback=self.block_del_callback, parent=self) # type: ignore
+        self.content_blocks.append(block)
         split_line = SplitLine()
         block.setMouseTracking(True)
         block.set_split_line(split_line)
@@ -1080,8 +1331,6 @@ class BlurWindow(QWidget):
         for func in block.set_select_funcs:
             func(self.global_selected_texts)
 
-        print(f"block{self.content_layout.count()}, sizeHint: {block.sizeHint().height()}")
-
         self.content_layout.insertWidget(self.content_layout.count()-1, block)  
         self.content_layout.insertWidget(self.content_layout.count()-1, split_line)
 
@@ -1089,12 +1338,6 @@ class BlurWindow(QWidget):
         self.content_layout.activate()
 
         QTimer.singleShot(100, self.adjust_height_animation)
-
-        # scroll_to_bottom
-        if self.height() != self.maximumHeight():
-            QTimer.singleShot(350, lambda: self.scroll_area.verticalScrollBar().setValue(self.scroll_area.verticalScrollBar().maximum()))
-        else:
-            QTimer.singleShot(150, lambda: self.scroll_area.verticalScrollBar().setValue(self.scroll_area.verticalScrollBar().maximum()))
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -1123,14 +1366,13 @@ class BlurWindow(QWidget):
             y = self.height() # 距离底部20px
             return (x, y, bar_width, 0)
     
-    def adjust_height_animation(self):
+    def adjust_height_animation(self, to_bottom=True):
         # 计算所有 ContentBlock 和 SplitLine 的总高度
         total_height = 0
         for i in range(self.content_layout.count()):
             item = self.content_layout.itemAt(i)
             widget = item.widget()
             if widget and isinstance(widget, (ContentBlock, SplitLine)):
-                print(f"number {i} item", widget.height())
                 total_height += widget.height()
 
         # 加上底部弹性空间的高度
@@ -1150,6 +1392,14 @@ class BlurWindow(QWidget):
         self._height_anim.setStartValue(self.height())
         self._height_anim.setEndValue(target_height)
         self._height_anim.start()
+
+        if to_bottom:
+            # scroll_to_bottom
+            if self.height() != self.maximumHeight():
+                QTimer.singleShot(350, lambda: self.scroll_area.verticalScrollBar().setValue(self.scroll_area.verticalScrollBar().maximum()))
+            else:
+                QTimer.singleShot(150, lambda: self.scroll_area.verticalScrollBar().setValue(self.scroll_area.verticalScrollBar().maximum()))
+
 
     def getHeight(self):
         return self.height()
