@@ -13,7 +13,6 @@ class MainWindow(BlurWindow):
         super().__init__()
         self.setWindowTitle("Reading Helper")
 
-
         self.current_text = ""
         self.confirmed = False
         self.get_definition_func = get_definition
