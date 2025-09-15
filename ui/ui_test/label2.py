@@ -3,7 +3,7 @@ from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea, QSizePolicy
 )
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QPainter, QColor, QBrush
+from PySide6.QtGui import QMouseEvent, QPainter, QColor, QBrush
 
 from PySide6.QtWidgets import QWidget, QGraphicsOpacityEffect
 from PySide6.QtCore import Qt
@@ -19,9 +19,7 @@ import jieba
 import spacy
 import threading
 
-sample_original_text = """
-1.Can Peanut Allergies Be Cured?
-A visit to an allergist confirmed that Anabelle was severely allergic to the peanut butter in the dessert, as well as to most other nuts. It began a life upheaval familiar to families of kids with allergies: learning to decode labels, to carry an EpiPen, and to interrogate friends and their parents about the ingredients in a birthday cake."""
+sample_original_text = """1.Can Peanut Allergies Be Cured?\nA visit to an allergist confirmed that Anabelle was severely allergic to the peanut butter in the dessert, as well as to most other nuts. It began a life upheaval familiar to families of kids with allergies: learning to decode labels, to carry an EpiPen, and to interrogate friends and their parents about the ingredients in a birthday cake."""
 sample_translated_text = "令人瞩目的新疗法可以使数百万儿童和成人摆脱花生过敏的致命威胁，解决我们增长最快的医疗问题之一"
 
 
@@ -313,12 +311,10 @@ class ContentLabel(QTextEdit):
     def mouseMoveEvent(self, event):
         """鼠标移动事件"""
         # 获取鼠标位置的单词
-        super().mouseMoveEvent(event)
         if time.time() - self.last_checked_word_timestamp < 0.05:
-            super().mouseMoveEvent(event)
-            return
+            return super().mouseMoveEvent(event)
         if not self.data_is_initialized:
-            return
+            return super().mouseMoveEvent(event)
         word, word_rects = self.get_word_at_position(event.position().toPoint()) 
         self.last_checked_word_timestamp = time.time()
         if word != self.hovered_word:
@@ -330,6 +326,7 @@ class ContentLabel(QTextEdit):
                 self.hide_timer.stop()
             else:
                 self.hide_timer.start(300)
+        return super().mouseMoveEvent(event)
 
         
     
@@ -418,6 +415,7 @@ class ContentLabel(QTextEdit):
         for w in selected_words: 
             self.add_selected_word(w)
         self.dataInitialized.emit()
+        
 
     def setPlainText(self, text, selected_words=[]):
         """重写设置文本方法"""
@@ -433,7 +431,7 @@ class ContentLabel(QTextEdit):
         self._highlight_opacity = 0
             
         # 自动调整高度
-        QTimer.singleShot(0, self.adjust_height_to_content)  # 使用定时器确保文档已更新
+        self.adjust_height_to_content()
 
     
     def keyPressEvent(self, event):
@@ -540,16 +538,17 @@ class SplitLine(QWidget):
 
 
 class ContentBlock(QWidget):     
-    def __init__(self, original_text, translated_text, parent=None, block_id=1):         
+    def __init__(self, original_text, translated_text, parent=None, block_id=1):          
         super().__init__(parent)       
 
         self.setObjectName("ContentBlock")  
+        self.setMouseTracking(True)
         self.split_line = None
         
         layout = QVBoxLayout(self)
         
         # 创建标签并设置自动换行和对齐方式
-        original_label = ContentLabel(f"Block{block_id}\n" + original_text, self, style_type=1)
+        original_label = ContentLabel(original_text, self, style_type=1)
         
         translated_label = ContentLabel(translated_text, self, style_type=2)
         layout.addWidget(original_label)         
@@ -671,6 +670,10 @@ class ContentBlock(QWidget):
             return
         super().keyPressEvent(event)
 
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        return super().mouseMoveEvent(event)
+        
+
 
 class NormalButton(QPushButton):
     def __init__(self, text, parent=None, state=1, text_color="white"):
@@ -756,6 +759,7 @@ class BottomBar(QWidget):
         super().__init__()
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setWindowFlag(Qt.FramelessWindowHint)
+        self.setMouseTracking(True)
 
         self.style_args = {
             "background-color": QColor(20, 20, 20, 200),
@@ -953,7 +957,8 @@ class BlurWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.setAttribute(Qt.WA_TranslucentBackground)  # 透明背景
-        self.setWindowFlag(Qt.FramelessWindowHint)      # 去掉窗口边框
+        self.setWindowFlag(Qt.FramelessWindowHint) 
+        self.setMouseTracking(True)     # 去掉窗口边框
 
         # 样式参数
         self.style_args = {
@@ -965,12 +970,17 @@ class BlurWindow(QWidget):
 
         # ========== ScrollArea ==========
         scroll_area = QScrollArea(self)
+
+        scroll_area.setMouseTracking(True)
+        scroll_area.viewport().setMouseTracking(True)
+
         scroll_area.setWidgetResizable(True)  # 随内容调整大小
         scroll_area.setFrameShape(QScrollArea.NoFrame)  # 去掉边框
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)  # 只要垂直滚动条
         
         scroll_area.setStyleSheet("QScrollArea { background: transparent; }")
         content_widget = QWidget()
+        content_widget.setMouseTracking(True)
         content_widget.setAutoFillBackground(False)
         content_widget.setStyleSheet("QWidget { background: transparent; }")
         
@@ -979,7 +989,7 @@ class BlurWindow(QWidget):
         content_layout.setSpacing(0)
 
         # 加入一些测试控件和分隔线
-        for i in range(2):
+        for i in range(3):
             block = ContentBlock(sample_original_text, sample_translated_text)
             split_line = SplitLine()
             block.set_split_line(split_line)
@@ -1046,6 +1056,13 @@ class BlurWindow(QWidget):
         elif event.key() == Qt.Key.Key_1:
             self.bottom_bar.start_show_animation()
         super().keyPressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent):
+        if event.position().y() > self.height() - 30 and self.bottom_bar.state == 0:
+            self.bottom_bar.start_show_animation()
+        elif event.position().y() < self.height() - 100 and self.bottom_bar.state == 1:
+            self.bottom_bar.start_hide_animation()
+        return super().mouseMoveEvent(event)
 
 
 if __name__ == "__main__":
