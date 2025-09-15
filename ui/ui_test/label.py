@@ -3,7 +3,7 @@ from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea, QSizePolicy
 )
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QPainter, QColor, QBrush
+from PySide6.QtGui import QMouseEvent, QPainter, QColor, QBrush
 
 from PySide6.QtWidgets import QWidget, QGraphicsOpacityEffect
 from PySide6.QtCore import Qt
@@ -19,11 +19,6 @@ import jieba
 import spacy
 import threading
 
-sample_original_text = """
-1.Can Peanut Allergies Be Cured?
-A visit to an allergist confirmed that Anabelle was severely allergic to the peanut butter in the dessert, as well as to most other nuts. It began a life upheaval familiar to families of kids with allergies: learning to decode labels, to carry an EpiPen, and to interrogate friends and their parents about the ingredients in a birthday cake."""
-sample_translated_text = "令人瞩目的新疗法可以使数百万儿童和成人摆脱花生过敏的致命威胁，解决我们增长最快的医疗问题之一"
-
 
 class ContentLabel(QTextEdit):
     wordHovered = Signal(str, QRect)  # 悬浮单词信号，包含单词和位置
@@ -34,7 +29,7 @@ class ContentLabel(QTextEdit):
     
     def __init__(self, text="", parent=None, style_type=1):
         super().__init__(text, parent)
-        
+        self.parent = parent
         # 设置为只读模式
         self.setReadOnly(True)
         
@@ -313,13 +308,11 @@ class ContentLabel(QTextEdit):
     def mouseMoveEvent(self, event):
         """鼠标移动事件"""
         # 获取鼠标位置的单词
-        super().mouseMoveEvent(event)
         if time.time() - self.last_checked_word_timestamp < 0.05:
-            super().mouseMoveEvent(event)
-            return
+            return super().mouseMoveEvent(event)
         if not self.data_is_initialized:
-            return
-        word, word_rects = self.get_word_at_position(event.position().toPoint()) 
+            return super().mouseMoveEvent(event)
+        word, word_rects = self.get_word_at_position(event.position().toPoint()) # type: ignore
         self.last_checked_word_timestamp = time.time()
         if word != self.hovered_word:
             self.hovered_word = word
@@ -330,9 +323,9 @@ class ContentLabel(QTextEdit):
                 self.hide_timer.stop()
             else:
                 self.hide_timer.start(300)
+        return super().mouseMoveEvent(event)
 
         
-    
     def leaveEvent(self, event):
         """鼠标离开事件"""
         self.hovered_word = ""
@@ -397,7 +390,6 @@ class ContentLabel(QTextEdit):
             pass
 
     def start_data_initialized_animation(self):
-        print(111)
         self.flash_color_select = "green"
         self.background_animation.setStartValue(0.0)
         self.background_animation.setEndValue(1.0)
@@ -418,6 +410,7 @@ class ContentLabel(QTextEdit):
         for w in selected_words: 
             self.add_selected_word(w)
         self.dataInitialized.emit()
+        
 
     def setPlainText(self, text, selected_words=[]):
         """重写设置文本方法"""
@@ -433,7 +426,7 @@ class ContentLabel(QTextEdit):
         self._highlight_opacity = 0
             
         # 自动调整高度
-        QTimer.singleShot(0, self.adjust_height_to_content)  # 使用定时器确保文档已更新
+        self.adjust_height_to_content()
 
     
     def keyPressEvent(self, event):
@@ -488,6 +481,7 @@ class ContentLabel(QTextEdit):
 
         super().keyPressEvent(event)
 
+
 class SplitLine(QWidget):
     def __init__(self, thickness=1, color=QColor(255, 255, 255, 100), parent=None):
         """
@@ -529,27 +523,29 @@ class SplitLine(QWidget):
     def paintEvent(self, event):
         """绘制分隔线"""
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.Antialiasing) # type: ignore
         
         # 设置画笔颜色和宽度
         painter.setBrush(QBrush(self.color))
-        painter.setPen(Qt.NoPen)
+        painter.setPen(Qt.NoPen) # type: ignore
         
         # 绘制矩形作为分隔线
         painter.drawRect(0, 0, self.width(), self.thickness)
 
 
 class ContentBlock(QWidget):     
-    def __init__(self, original_text, translated_text, parent=None, block_id=1):         
+    def __init__(self, original_text, translated_text, parent=None, block_id=1, adjust_main_window_height_callback=None):          
         super().__init__(parent)       
 
         self.setObjectName("ContentBlock")  
+        self.setMouseTracking(True)
         self.split_line = None
+        self.adjust_main_window_height_callback = adjust_main_window_height_callback    
         
         layout = QVBoxLayout(self)
         
         # 创建标签并设置自动换行和对齐方式
-        original_label = ContentLabel(f"Block{block_id}\n" + original_text, self, style_type=1)
+        original_label = ContentLabel(original_text, self, style_type=1)
         
         translated_label = ContentLabel(translated_text, self, style_type=2)
         layout.addWidget(original_label)         
@@ -563,7 +559,7 @@ class ContentBlock(QWidget):
         self.setLayout(layout)          
         
         # 设置尺寸策略，让组件能够扩展
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred) # type: ignore
         
         # 删除动画相关属性
         self._background_color = QColor(200, 255, 200, 0)  # 初始背景颜色
@@ -619,7 +615,10 @@ class ContentBlock(QWidget):
         """高度动画完成后真正关闭组件"""
         if self.split_line: 
             self.split_line.close()
+            self.split_line.deleteLater()
         self.close()
+        self.deleteLater()
+        QTimer.singleShot(100, self.adjust_main_window_height_callback)  # 延迟更新高度，确保布局稳定
         
         
     def _start_close_animation(self):
@@ -671,6 +670,9 @@ class ContentBlock(QWidget):
             return
         super().keyPressEvent(event)
 
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        return super().mouseMoveEvent(event)
+        
 
 class NormalButton(QPushButton):
     def __init__(self, text, parent=None, state=1, text_color="white"):
@@ -709,7 +711,7 @@ class NormalButton(QPushButton):
     def _on_animation_finished(self):
         """动画完成后更新父布局"""
         if self.parent():
-            parent_layout = self.parent().layout()
+            parent_layout = self.parent().layout() # type: ignore
             if parent_layout:
                 parent_layout.update()
                 parent_layout.activate()
@@ -754,8 +756,9 @@ class NormalButton(QPushButton):
 class BottomBar(QWidget):
     def __init__(self):
         super().__init__()
-        self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setWindowFlag(Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground) # type: ignore
+        self.setWindowFlag(Qt.FramelessWindowHint) # type: ignore
+        self.setMouseTracking(True)
 
         self.style_args = {
             "background-color": QColor(20, 20, 20, 200),
@@ -851,8 +854,7 @@ class BottomBar(QWidget):
         # 获取起始和结束位置
         if self.parent():
             current_rect = self.geometry()
-            end_geo = self.parent().get_bar_geo(state=1)    # 显示状态
-            print(end_geo)
+            end_geo = self.parent().get_bar_geo(state=1) 
             
             # 设置几何动画
             self.geometry_animation.setStartValue(current_rect)
@@ -884,7 +886,7 @@ class BottomBar(QWidget):
         # 获取起始和结束位置
         if self.parent():
             current_rect = self.geometry()
-            end_geo = self.parent().get_bar_geo(state=0)   # 隐藏状态
+            end_geo = self.parent().get_bar_geo(state=0)   # 隐藏状态 # type: ignore
             
             # 设置几何动画
             self.geometry_animation.setStartValue(current_rect)
@@ -918,10 +920,10 @@ class BottomBar(QWidget):
             return
             
         try:
-            painter.setRenderHint(QPainter.Antialiasing)
+            painter.setRenderHint(QPainter.Antialiasing) # type: ignore
             brush = QBrush(self.style_args["background-color"])
             painter.setBrush(brush)
-            painter.setPen(Qt.NoPen)
+            painter.setPen(Qt.NoPen) # type: ignore
             painter.drawRoundedRect(self.rect(), self.style_args["border-radius"], self.style_args["border-radius"])
         except Exception as e:
             print(f"绘制错误: {e}")
@@ -930,30 +932,27 @@ class BottomBar(QWidget):
             if painter.isActive():
                 painter.end()
 
-    def closeEvent(self, event):
-        """修复：清理资源，防止内存泄漏"""
-        # 停止所有动画
-        if hasattr(self, 'show_animation_group'):
-            self.show_animation_group.stop()
-        if hasattr(self, 'hide_animation_group'):
-            self.hide_animation_group.stop()
-        super().closeEvent(event)
-
-    def __del__(self):
-        """修复：析构时清理动画资源"""
-        try:
-            if hasattr(self, 'show_animation_group'):
-                self.show_animation_group.stop()
-            if hasattr(self, 'hide_animation_group'):
-                self.hide_animation_group.stop()
-        except:
-            pass
 
 class BlurWindow(QWidget):
+    addContentBlockSignal = Signal(str, object)
+
     def __init__(self):
         super().__init__()
-        self.setAttribute(Qt.WA_TranslucentBackground)  # 透明背景
-        self.setWindowFlag(Qt.FramelessWindowHint)      # 去掉窗口边框
+        self.setAttribute(Qt.WA_TranslucentBackground)  # 透明背景 # type: ignore
+        self.setWindowFlag(Qt.FramelessWindowHint)  # type: ignore
+        self.setMouseTracking(True)     # 去掉窗口边框
+
+
+        self._drag_active = False
+        self._drag_position = QPoint(0, 0)
+
+
+        self._height_anim = QPropertyAnimation(self, b"height_prop")
+        self._height_anim.setDuration(300)
+        self._height_anim.setEasingCurve(QEasingCurve.InOutQuad)
+
+        # 初始高度
+        self.setMaximumHeight(800)
 
         # 样式参数
         self.style_args = {
@@ -965,29 +964,25 @@ class BlurWindow(QWidget):
 
         # ========== ScrollArea ==========
         scroll_area = QScrollArea(self)
+
+        scroll_area.setMouseTracking(True)
+        scroll_area.viewport().setMouseTracking(True)
+
         scroll_area.setWidgetResizable(True)  # 随内容调整大小
-        scroll_area.setFrameShape(QScrollArea.NoFrame)  # 去掉边框
-        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)  # 只要垂直滚动条
+        scroll_area.setFrameShape(QScrollArea.NoFrame)  # 去掉边框 # type: ignore
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)  # 只要垂直滚动条 # type: ignore
         
         scroll_area.setStyleSheet("QScrollArea { background: transparent; }")
         content_widget = QWidget()
+        content_widget.setMouseTracking(True)
         content_widget.setAutoFillBackground(False)
         content_widget.setStyleSheet("QWidget { background: transparent; }")
         
-        content_layout = QVBoxLayout(content_widget)
-        content_layout.setContentsMargins(0, 0, 0, 0)
-        content_layout.setSpacing(0)
+        self.content_layout = QVBoxLayout(content_widget)
+        self.content_layout.setContentsMargins(0, 0, 0, 0)
+        self.content_layout.setSpacing(0)
 
-        # 加入一些测试控件和分隔线
-        for i in range(2):
-            block = ContentBlock(sample_original_text, sample_translated_text)
-            split_line = SplitLine()
-            block.set_split_line(split_line)
-
-            content_layout.addWidget(block)
-            content_layout.addWidget(split_line)
-
-        content_layout.addStretch(2)  # 底部弹性空间
+        self.content_layout.addStretch(2)  # 底部弹性空间
 
         scroll_area.setWidget(content_widget)
 
@@ -1003,16 +998,33 @@ class BlurWindow(QWidget):
         layout.addWidget(scroll_area)
         self.setLayout(layout)
 
+        self.addContentBlockSignal.connect(self.add_content_block)
+    
+    def add_content_block(self, original_text, translated_text_stream_func):
+        """添加内容块"""
+        block = ContentBlock(original_text, translated_text_stream_func, adjust_main_window_height_callback=self.adjust_height_animation) # type: ignore
+        split_line = SplitLine()
+        block.setMouseTracking(True)
+        block.set_split_line(split_line)
+        print(f"block{self.content_layout.count()}, sizeHint: {block.sizeHint().height()}")
+
+        self.content_layout.insertWidget(self.content_layout.count()-1, block)  
+        self.content_layout.insertWidget(self.content_layout.count()-1, split_line)
+
+        self.content_layout.update()
+        self.content_layout.activate()
+
+        self.adjust_height_animation()
+
     def paintEvent(self, event):
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.Antialiasing) # type: ignore
         brush = QBrush(self.style_args["background-color"])
         painter.setBrush(brush)
-        painter.setPen(Qt.NoPen)
+        painter.setPen(Qt.NoPen) # type: ignore
         painter.drawRoundedRect(self.rect(), self.style_args["border-radius"], self.style_args["border-radius"])
     
     def get_bar_geo(self, state=1):
-        print(state)
         if state:
             # 计算BottomBar的宽度和位置
             window_width = self.width()
@@ -1030,7 +1042,43 @@ class BlurWindow(QWidget):
             x = (window_width - bar_width) // 2
             y = self.height() # 距离底部20px
             return (x, y, bar_width, 0)
-            
+    
+    def adjust_height_animation(self):
+        # 计算所有 ContentBlock 和 SplitLine 的总高度
+        total_height = 0
+        for i in range(self.content_layout.count()):
+            item = self.content_layout.itemAt(i)
+            widget = item.widget()
+            if widget and isinstance(widget, (ContentBlock, SplitLine)):
+                print(f"number {i} item", widget.height())
+                total_height += widget.height()
+
+        # 加上底部弹性空间的高度
+        stretch_height = 0
+        for i in range(self.content_layout.count()):
+            if self.content_layout.itemAt(i).spacerItem():
+                stretch_height += self.content_layout.itemAt(i).spacerItem().sizeHint().height()
+
+        target_height = min(total_height + stretch_height, 800)
+
+        # 如果没有内容，高度过渡到0
+        if self.content_layout.count() == 1:
+            target_height = 0
+
+        print(total_height, target_height)
+        self._height_anim.stop()
+        self._height_anim.setStartValue(self.height())
+        self._height_anim.setEndValue(target_height)
+        self._height_anim.start()
+
+
+    def getHeight(self):
+        return self.height()
+
+    def setHeight(self, h):
+        self.resize(self.width(), h) 
+
+    height_prop = Property(int, getHeight, setHeight)  # 自定义高度属性
 
     def resizeEvent(self, event):
         """窗口大小改变时调整BottomBar的位置和大小"""
@@ -1047,10 +1095,40 @@ class BlurWindow(QWidget):
             self.bottom_bar.start_show_animation()
         super().keyPressEvent(event)
 
+    def mousePressEvent(self, event: QMouseEvent):
+        if event.button() == Qt.LeftButton:
+            self._drag_active = True
+            # 记录鼠标相对窗口左上角的位置
+            self._drag_position = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            event.accept()
+        super().mousePressEvent(event)
+    
+    def mouseReleaseEvent(self, event: QMouseEvent):
+        if event.button() == Qt.LeftButton:
+            self._drag_active = False
+            event.accept()
+        super().mouseReleaseEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent):
+        
+        if self._drag_active and event.buttons() & Qt.LeftButton:
+            self.move(event.globalPosition().toPoint() - self._drag_position)
+            event.accept()
+         # 根据鼠标位置和当前状态决定显示或隐藏 BottomBar
+        if (event.position().y() < self.height() - 100 and self.bottom_bar.state == 1) or self.content_layout.count() == 1:
+            self.bottom_bar.start_hide_animation()
+        elif event.position().y() > self.height() - 30 and self.bottom_bar.state == 0:
+            self.bottom_bar.start_show_animation()
+        return super().mouseMoveEvent(event)
+
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     w = BlurWindow()
-    w.resize(400, 700)
+    w.addContentBlockSignal.emit("“Most of that caution is in Anabelle’s past now. For the vast majority of patients, peanut allergy is an unpredictable, lifelong affliction. But thanks to a clinical trial that Anabelle entered when she was nine, she can now tolerate peanuts and tree nuts well enough to feel safe every day. The drug she received in that trial was approved for treating food allergies by the U.S. Food and Drug Administration last year, making it the second food allergy remedy to earn the agency’s blessing since 2020.”", "Translating...")
+    w.addContentBlockSignal.emit("“Most of that caution is in Anabelle’s past now. For the vast majority of patients, peanut allergy is an unpredictable, lifelong affliction. But thanks to a clinical trial that Anabelle entered when she was nine, she can now tolerate peanuts and tree nuts well enough to feel safe every day. The drug she received in that trial was approved for treating food allergies by the U.S. Food and Drug Administration last year, making it the second food allergy remedy to earn the agency’s blessing since 2020.”", "Translating...")
+    w.addContentBlockSignal.emit("“Most of that caution is in Anabelle’s past now. For the vast majority of patients, peanut allergy is an unpredictable, lifelong affliction. But thanks to a clinical trial that Anabelle entered when she was nine, she can now tolerate peanuts and tree nuts well enough to feel safe every day. The drug she received in that trial was approved for treating food allergies by the U.S. Food and Drug Administration last year, making it the second food allergy remedy to earn the agency’s blessing since 2020.”", "Translating...")
+    w.addContentBlockSignal.emit("“Most of that caution is in Anabelle’s past now. For the vast majority of patients, peanut allergy is an unpredictable, lifelong affliction. But thanks to a clinical trial that Anabelle entered when she was nine, she can now tolerate peanuts and tree nuts well enough to feel safe every day. The drug she received in that trial was approved for treating food allergies by the U.S. Food and Drug Administration last year, making it the second food allergy remedy to earn the agency’s blessing since 2020.”", "Translating...")
     w.show()
     sys.exit(app.exec())
