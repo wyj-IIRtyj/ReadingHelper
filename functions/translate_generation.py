@@ -1,6 +1,8 @@
 
 API_KEY = "sk-8wrV0iue1gRXadSaCLZFGEROwv6VOblPVOLx3psnrUid6ZUo"
 from openai import OpenAI
+import requests
+
 
 client = OpenAI(
     # defaults to os.environ.get("OPENAI_API_KEY")
@@ -74,4 +76,20 @@ def get_translated_text(text):
     }
     ]
     return gpt_35_api(messages)
-    
+
+def get_definition(word: str):
+    """
+    查询单词释义
+    :param word: 英文单词
+    :return: 返回 json 数据或 None
+    """
+    url = f"https://api.dictionaryapi.dev/api/v2/entries/en/{word}"
+    try:
+        response = requests.get(url, timeout=5)
+        response.raise_for_status()  # 检查请求是否成功
+        return response.json()[0]
+    except requests.exceptions.RequestException as e:
+        print(f"请求出错: {e}")
+        return None
+
+#
