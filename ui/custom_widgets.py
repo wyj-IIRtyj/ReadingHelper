@@ -97,6 +97,7 @@ class ContentLabel(QTextEdit):
         
         # 设置文本内容
         if text:
+            self.text = text
             self.setPlainText(text, global_selected)
     
     # 2. 添加自动调整高度的方法
@@ -653,6 +654,15 @@ class ContentBlock(QWidget):
         # 删除动画相关属性
         self._background_color = QColor(200, 255, 200, 0)  # 初始背景颜色
         self._delete_animation_running = False  # 动画运行状态
+
+        self.color_breath_animation = None
+        self.stop_animation = None  # 用于停止时的过渡动画
+        self.is_running = False
+        self.breathing_in = True
+
+        # 创建呼吸灯动画
+        self.original_color = QColor(100, 100, 100, 0)  # 原始颜色
+        self.setup_advanced_animation()
         
         # 创建颜色动画
         self.color_animation = QPropertyAnimation(self, b"background_color")
@@ -674,6 +684,8 @@ class ContentBlock(QWidget):
             }
         """)
     
+    
+
     def get_background_color(self):
         return self._background_color
     
@@ -687,17 +699,93 @@ class ContentBlock(QWidget):
 
     # 定义属性，用于动画
     background_color = Property(QColor, get_background_color, set_background_color)
+    def set_breath_mode(self, mode):
+        if mode == "loading": 
+            self.min_color =  QColor(100, 100, 160, 80)
+            self.max_color = QColor(100, 100, 160, 160)  
+        elif mode == "playing": 
+            self.min_color =  QColor(100, 160, 100, 80)
+            self.max_color = QColor(100, 160, 100, 160)  
+
+
+    def setup_advanced_animation(self):
+        """设置呼吸灯动画"""
+        self.color_breath_animation = QPropertyAnimation(self, b"background_color")
+        self.color_breath_animation.setDuration(1500)  # 1.5秒
+        self.color_breath_animation.setEasingCurve(QEasingCurve.Type.InOutQuad)
+        
+        # 连接动画完成信号到循环函数
+        self.color_breath_animation.finished.connect(self._on_breath_animation_finished)
+        self.set_breath_mode("loading") 
+        
+        # 设置停止动画
+        self.stop_animation = QPropertyAnimation(self, b"background_color")
+        self.stop_animation.setDuration(300)  # 0.3秒过渡
+        self.stop_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
     
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.fillRect(self.rect(), self._background_color)
-        super().paintEvent(event)
+    def start_breathing(self, first_cycle=False):
+        """开始呼吸动画"""
+        if self.is_running:
+            return
+            
+        self.is_running = True
+        self.breathing_in = True
+        self._start_breathing_cycle(first_cycle)
     
+    def stop_breathing(self):
+        """停止呼吸动画并过渡到原始颜色"""
+        if not self.is_running:
+            return
+            
+        self.is_running = False
+        
+        # 停止当前动画
+        if self.color_breath_animation.state() == QPropertyAnimation.State.Running:
+            self.color_breath_animation.stop()
+        
+        # 启动过渡到原始颜色的动画
+        current_color = self._background_color
+        self.stop_animation.setStartValue(current_color)
+        self.stop_animation.setEndValue(self.original_color)
+        self.stop_animation.start()
+    
+    def toggle_breathing(self):
+        """切换呼吸动画状态"""
+        if self.is_running:
+            self.stop_breathing()
+        else:
+            self.start_breathing()
+    
+    def _start_breathing_cycle(self, first_cycle=False):
+        """开始一个呼吸周期"""
+        if not self.is_running:
+            return
+        if first_cycle:
+            self.color_breath_animation.setStartValue(self._background_color)
+            self.color_breath_animation.setEndValue(self.max_color)
+        elif self.breathing_in:
+            # 从暗到亮
+            self.color_breath_animation.setStartValue(self.min_color)
+            self.color_breath_animation.setEndValue(self.max_color)
+        else:
+            # 从亮到暗
+            self.color_breath_animation.setStartValue(self.max_color)
+            self.color_breath_animation.setEndValue(self.min_color)
+        
+        self.color_breath_animation.start()
+    
+    def _on_breath_animation_finished(self):
+        """动画完成回调"""
+        # 只有在运行状态下才继续循环
+        if self.is_running and self.sender() == self.color_breath_animation:
+            self.breathing_in = not self.breathing_in
+            self._start_breathing_cycle()
+
+    # 删除block动画相关
     def _on_animation_finished(self):
         """动画完成回调"""
         self._delete_animation_running = False
-        # 将背景色设置为透明深蓝色
-        self._background_color = QColor(255, 100, 100, 0)  # 透明深蓝色
+        self._background_color = QColor(255, 100, 100, 0)  
         self.update()
     
     def _on_height_animation_finished(self):
@@ -728,6 +816,9 @@ class ContentBlock(QWidget):
     
     def _start_delete_animation(self):
         """开始删除动画"""
+
+        self.stop_breathing()
+
         if self._delete_animation_running:
             # 如果动画正在运行，开始关闭动画
             self._start_close_animation()
@@ -748,6 +839,11 @@ class ContentBlock(QWidget):
         self.update()
         self.color_animation.start()
     
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), self._background_color)
+        super().paintEvent(event)
+
     def keyPressEvent(self, event):
         """禁用键盘输入（只读模式）"""
         # 设置回车触发事件
@@ -845,7 +941,7 @@ class NormalButton(QPushButton):
 
 
 class VocabularyCard(QWidget):
-    def __init__(self, vocab_data: dict, parent=None):
+    def __init__(self, word, parent=None):
         super().__init__(parent)
         self.setAttribute(Qt.WA_TranslucentBackground)  # 半透明背景
         self.setWindowFlag(Qt.FramelessWindowHint) # type: ignore
@@ -877,21 +973,18 @@ class VocabularyCard(QWidget):
         # 创建富文本编辑器
         self.text_edit = QTextEdit()
         self._setup_text_edit()
-        
-        # 设置内容
-        self._setup_content(vocab_data)
+        self.text_edit.setHtml(f'<h1 style="color: white; font-size: 22px; font-weight: bold; margin: 0px 0px 8px 0px;">{word}</h1>')
+    
         
         self.layout.addWidget(self.text_edit)
 
-        # 来源标签（保持在底部）
-        source_urls = vocab_data.get("sourceUrls", [])
-        if source_urls:
-            self.layout.addStretch(1)
-            src_label = QLabel(f"Source: {source_urls[0]}")
-            src_label.setStyleSheet("font-size: 12px; color: #888888;")
-            src_label.setAlignment(Qt.AlignCenter)
-            src_label.setWordWrap(True)
-            self.layout.addWidget(src_label)
+        self.layout.addStretch(1)
+
+        self.src_label = QLabel()
+
+        
+
+        self.layout.addWidget(self.src_label)
 
         # ========= 动画 =========
         self.geometry_animation = QPropertyAnimation(self, b"geometry")
@@ -936,6 +1029,15 @@ class VocabularyCard(QWidget):
         self.text_edit.setFixedHeight(doc_height + 5)  # 留一点余量
 
     def _setup_content(self, vocab_data):
+
+        # 来源标签（保持在底部）
+        source_urls = vocab_data.get("sourceUrls", [])
+        if source_urls:
+            self.src_label.setText(f"Source: {source_urls[0]}")
+            self.src_label.setStyleSheet("font-size: 12px; color: #888888;")
+            self.src_label.setAlignment(Qt.AlignCenter)
+            self.src_label.setWordWrap(True)
+
         """设置富文本内容"""
         word = vocab_data.get("word", "")
         phonetics = [p.get("text", "") for p in vocab_data.get("phonetics", []) if p.get("text")]
@@ -1091,38 +1193,6 @@ class BottomBar(QWidget):
         content_layout.addStretch(1)
         content_layout.addWidget(self.clear_button)
 
-        # 设置按钮功能
-        def start_read(): 
-            self.read_all_button.start_hide_animation()
-            QTimer.singleShot(50, lambda: self.stop_button.start_show_animation())
-            QTimer.singleShot(50, lambda: self.cancel_button.start_show_animation())
-
-        self.read_all_button.clicked.connect(start_read)
-
-        def stop_read():
-            self.stop_button.start_hide_animation()
-            QTimer.singleShot(100, lambda: self.continue_button.start_show_animation())
-
-        def cancel_read():
-            self.stop_button.start_hide_animation()
-            self.cancel_button.start_hide_animation()
-            self.continue_button.start_hide_animation()
-            QTimer.singleShot(350, lambda: self.read_all_button.start_show_animation())
-
-        def continue_read():
-            self.continue_button.start_hide_animation()
-            QTimer.singleShot(50, lambda: self.stop_button.start_show_animation())
-
-        def clear_content():
-            blocks = [*self.parent.content_blocks]
-            for block in blocks: 
-                block._start_close_animation()
-            pass
-
-        self.stop_button.clicked.connect(stop_read)
-        self.cancel_button.clicked.connect(cancel_read)
-        self.continue_button.clicked.connect(continue_read)
-        self.clear_button.clicked.connect(clear_content)
 
         # =============== 修复自身动画配置 ===============
 
@@ -1250,6 +1320,7 @@ class BlurWindow(QWidget):
         self.set_selected_text_funcs = []
 
         self.content_blocks = []
+        self.audio_datas = {}
 
         self.get_definition_func = lambda word: {}
 
@@ -1315,6 +1386,9 @@ class BlurWindow(QWidget):
         if contentblock:
             if contentblock in self.content_blocks: 
                 self.content_blocks.remove(contentblock)
+            if contentblock in self.audio_datas: 
+                del self.audio_datas[contentblock]
+                
         QTimer.singleShot(100, lambda: self.adjust_height_animation(False))
 
     def add_content_block(self, original_text, stream, sync_selected_text_func):
