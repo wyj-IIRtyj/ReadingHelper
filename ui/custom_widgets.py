@@ -1325,6 +1325,9 @@ class BlurWindow(QWidget):
         self.get_definition_func = lambda word: {}
 
 
+        self.read_the_newest_block = False
+
+
         self._height_anim = QPropertyAnimation(self, b"height_prop")
         self._height_anim.setDuration(300)
         self._height_anim.setEasingCurve(QEasingCurve.InOutQuad)
@@ -1378,6 +1381,9 @@ class BlurWindow(QWidget):
 
         self.addContentBlockSignal.connect(self.add_content_block)
 
+    def read_new_block(self):
+        return
+
     def block_del_callback(self, labels, contentblock=None):
         """内容块删除回调"""
         for label in labels:
@@ -1395,6 +1401,7 @@ class BlurWindow(QWidget):
         """添加内容块"""
         block = ContentBlock(original_text, stream, adjust_main_window_height_callback=self.adjust_height_animation, sync_func=sync_selected_text_func, del_action_callback=self.block_del_callback, parent=self) # type: ignore
         self.content_blocks.append(block)
+        self.read_new_block()
         split_line = SplitLine()
         block.setMouseTracking(True)
         block.set_split_line(split_line)

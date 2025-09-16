@@ -18,6 +18,7 @@ class MainWindow(BlurWindow):
 
         self.current_text = ""
         self.confirmed = False
+        self.read_the_newest_block = False
         self.get_definition_func = get_definition
 
 
@@ -32,6 +33,7 @@ class MainWindow(BlurWindow):
 
         # 设置按钮功能
         def start_read(): 
+            self.read_the_newest_block = True
             self.start_read_sequence()
             self.bottom_bar.read_all_button.start_hide_animation()
             QTimer.singleShot(50, lambda: self.bottom_bar.stop_button.start_show_animation())
@@ -39,11 +41,13 @@ class MainWindow(BlurWindow):
 
 
         def stop_read():
+            self.read_the_newest_block = False
             self.pause_read_sequence()
             self.bottom_bar.stop_button.start_hide_animation()
             QTimer.singleShot(100, lambda: self.bottom_bar.continue_button.start_show_animation())
 
         def cancel_read():
+            self.read_the_newest_block = False
             self.stop_read_sequence()
             self.bottom_bar.stop_button.start_hide_animation()
             self.bottom_bar.cancel_button.start_hide_animation()
@@ -51,6 +55,7 @@ class MainWindow(BlurWindow):
             QTimer.singleShot(350, lambda: self.bottom_bar.read_all_button.start_show_animation())
 
         def continue_read():
+            self.read_the_newest_block = True
             self.continue_read_sequence()
             self.bottom_bar.continue_button.start_hide_animation()
             QTimer.singleShot(50, lambda: self.bottom_bar.stop_button.start_show_animation())
@@ -204,6 +209,14 @@ class MainWindow(BlurWindow):
     def stop_read_sequence(self): 
         self.stop_audio()
         self.block_playlist = [] 
+    
+    def read_new_block(self):
+        if not len(self.content_blocks):
+            self.block_playlist.append(self.content_blocks[-1])
+            self.update_status("停止", True)
+        else: 
+            self.block_playlist.append(self.content_blocks[-1])
+        
         
 
     def set_card_data(self, data):
