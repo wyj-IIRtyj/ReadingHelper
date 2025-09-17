@@ -211,7 +211,7 @@ class MainWindow(BlurWindow):
         self.block_playlist = [] 
     
     def read_new_block(self):
-        if not len(self.content_blocks):
+        if (not len(self.block_playlist)) and self.read_the_newest_block:
             self.block_playlist.append(self.content_blocks[-1])
             self.update_status("停止", True)
         else: 
