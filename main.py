@@ -2,6 +2,7 @@ from ui.custom_widgets import BlurWindow, BottomBar, NormalButton, ContentBlock,
 from functions.text_collection import get_selected_text_with_clipboard
 from functions.translate_generation import get_translated_text_stream, get_definition
 from functions.audio_generation import AudioPlayer, TTSWorker
+from functions.data_management import save_vars, load_vars, DATA_FILE
 
 import sys
 import time
@@ -23,8 +24,17 @@ class MainWindow(BlurWindow):
 
 
         self.block_playlist = []
+        self.dictionary = {}
         self.init_audio_player()
         self.init_tts_worker()
+
+        try:
+            loaded_data = load_vars(DATA_FILE)
+            self.global_selected_texts = loaded_data["global_selected_texts"]
+            self.dictionary = loaded_data["dictionary"]
+            print("data loaded success")
+        except: 
+            pass
         
         # 音频数据
         self.current_audio_data = None
@@ -217,18 +227,21 @@ class MainWindow(BlurWindow):
         else: 
             self.block_playlist.append(self.content_blocks[-1])
         
-        
-
     def set_card_data(self, data):
         # 设置内容
         self.card._setup_content(data)
         
     def load_card_data(self, word): 
-        data = {} 
-        try:
-            data = self.get_definition_func(word)
-        except:
-            pass 
+
+        if word in self.dictionary: 
+            data = self.dictionary[word]
+        else:
+            data = {} 
+            try:
+                data = self.get_definition_func(word)
+                self.dictionary[word] = data
+            except:
+                pass 
 
         if self.loading_word == word:
             self.SetCardDataSignal.emit(data)
@@ -291,6 +304,10 @@ class MainWindow(BlurWindow):
         """关闭事件"""
         # 停止播放
         self.audio_player.stop()
+
+        save_vars(DATA_FILE, 
+                  global_selected_texts=self.global_selected_texts, 
+                  dictionary=self.dictionary)
         
         # 清理TTS线程
         if self.tts_thread.isRunning():
