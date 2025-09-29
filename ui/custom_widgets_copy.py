@@ -31,6 +31,7 @@ class ContentLabel(QTextEdit):
     
     def __init__(self, text="", parent=None, style_type=1, global_selected=[]):
         super().__init__("", parent)
+        self.parent = parent
         # 设置为只读模式
         self.setReadOnly(True)
         
@@ -467,19 +468,16 @@ class ContentLabel(QTextEdit):
     def stream_data_initialiaze(self, stream):
         
         text = "" 
-        try:
-            for piece in stream[0](stream[1]): 
-                text += piece
-                self.realTimeChangeTextSignal.emit(text)
-                self.text = text
-        except:
-            pass
+        for piece in stream[0](stream[1]): 
+            text += piece
+            self.realTimeChangeTextSignal.emit(text)
+            self.text = text
         self.data_initialization(text, selected_words=[])
         
     def real_time_change_text(self, text):
         super().setPlainText(text)
         self.adjust_height_to_content()
-        self.parent().adjust_main_window_height_callback()
+        self.parent.adjust_main_window_height_callback()
 
     def setPlainText(self, text, selected_words=[]):
         """重写设置文本方法"""
@@ -1146,7 +1144,7 @@ class VocabularyCard(QWidget):
 
 class BottomBar(QWidget):
     def __init__(self, parent=None):
-        super().__init__(parent=parent)
+        super().__init__()
         self.setAttribute(Qt.WA_TranslucentBackground) # type: ignore
         self.setWindowFlag(Qt.FramelessWindowHint) # type: ignore
         self.setMouseTracking(True)
@@ -1159,6 +1157,7 @@ class BottomBar(QWidget):
         }
         self.state = 1
         self.animation_running = False
+        self.parent = parent
 
         # 创建按钮
         self.read_all_button = NormalButton("Read All", self)
@@ -1217,9 +1216,9 @@ class BottomBar(QWidget):
         
         
         # 获取起始和结束位置
-        if self.parent():
+        if self.parent:
             current_rect = self.geometry()
-            end_geo = self.parent().get_bar_geo(state=1) 
+            end_geo = self.parent.get_bar_geo(state=1) 
             
             # 设置几何动画
             self.geometry_animation.setStartValue(current_rect)
@@ -1249,9 +1248,9 @@ class BottomBar(QWidget):
         self.is_visible_state = False
         
         # 获取起始和结束位置
-        if self.parent():
+        if self.parent:
             current_rect = self.geometry()
-            end_geo = self.parent().get_bar_geo(state=0)   # 隐藏状态 # type: ignore
+            end_geo = self.parent.get_bar_geo(state=0)   # 隐藏状态 # type: ignore
             
             # 设置几何动画
             self.geometry_animation.setStartValue(current_rect)
