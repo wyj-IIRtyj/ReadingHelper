@@ -1,13 +1,12 @@
+import os
 
-API_KEY = "REDACTED_LEAKED_KEY"
 from openai import OpenAI
 import requests
 
 
 client = OpenAI(
-    # defaults to os.environ.get("OPENAI_API_KEY")
-    api_key=API_KEY,
-    base_url="https://api.chatanywhere.tech/v1"
+    api_key=os.environ.get("OPENAI_API_KEY"),
+    base_url=os.environ.get("OPENAI_BASE_URL", "https://api.chatanywhere.tech/v1"),
 )
 
 # 非流式响应

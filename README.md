@@ -50,6 +50,18 @@ The current codebase is split into a small set of focused modules:
     └── custom_widgets.py       # PySide6 interface components
 ```
 
+## Setup
+
+The translation client reads credentials from environment variables; secrets are intentionally not stored in the repository.
+
+```bash
+export OPENAI_API_KEY="your-api-key"
+# Optional: override the OpenAI-compatible endpoint
+export OPENAI_BASE_URL="https://api.chatanywhere.tech/v1"
+```
+
+Then run the app from a Python environment with the project dependencies installed.
+
 ## Project status
 
 This repository is a **prototype / learning project**, not a packaged end-user release. The most interesting part of the project is the interaction model: turning small reading actions into a continuous desktop workflow rather than forcing the reader to jump between separate translation, dictionary, and TTS tools.
